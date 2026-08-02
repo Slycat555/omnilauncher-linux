@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="resources/omni.png">
+  <img src="omni.png">
 </p>
 
 <h1 align="center">OmniLauncher</h1>
