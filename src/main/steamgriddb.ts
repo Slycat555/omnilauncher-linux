@@ -1,0 +1,285 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { extname, join } from 'path'
+import type { CoverOption, StoreKind } from '../shared/types'
+import { coverGameDir, coversCacheDir } from './paths'
+
+const API_BASE = 'https://www.steamgriddb.com/api/v2'
+
+interface SgdbSearchResult {
+  id: number
+  name: string
+}
+
+interface SgdbImage {
+  id: number
+  url: string
+  thumb: string
+  width: number
+  height: number
+}
+
+interface CoverEntry {
+  /** Absolute paths to files already downloaded to disk. */
+  coverPath?: string
+  heroPath?: string
+  /** Once the user has picked art by hand, automatic refreshes must never overwrite it. */
+  pinned?: boolean
+  fetchedAt: number
+}
+
+let index: Record<string, CoverEntry> = {}
+let indexLoaded = false
+
+function indexFile(): string {
+  return join(coversCacheDir(), 'index.json')
+}
+
+function ensureDir(dir: string): void {
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+}
+
+function loadIndex(): void {
+  if (indexLoaded) return
+  indexLoaded = true
+  ensureDir(coversCacheDir())
+  const file = indexFile()
+  if (existsSync(file)) {
+    try {
+      index = JSON.parse(readFileSync(file, 'utf-8'))
+    } catch {
+      index = {}
+    }
+  }
+}
+
+function persistIndex(): void {
+  ensureDir(coversCacheDir())
+  writeFileSync(indexFile(), JSON.stringify(index, null, 2))
+}
+
+async function apiGet<T>(apiKey: string, path: string): Promise<T | null> {
+  try {
+    const res = await fetch(`${API_BASE}${path}`, {
+      headers: { Authorization: `Bearer ${apiKey}` }
+    })
+    if (!res.ok) return null
+    const json = (await res.json()) as { success: boolean; data: T }
+    return json.success ? json.data : null
+  } catch {
+    return null
+  }
+}
+
+const STEAM_PLATFORM: Record<StoreKind, string | null> = {
+  steam: 'steam',
+  gog: 'gog',
+  epic: 'egs',
+  amazon: null
+}
+
+async function resolveSgdbGameId(
+  apiKey: string,
+  title: string
+): Promise<number | null> {
+  const results = await apiGet<SgdbSearchResult[]>(
+    apiKey,
+    `/search/autocomplete/${encodeURIComponent(title)}`
+  )
+  return results && results.length > 0 ? results[0].id : null
+}
+
+/** All grid options for a game, for the right-click picker - not just the first pick. */
+export async function searchCoverOptions(
+  apiKey: string,
+  store: StoreKind,
+  appId: string,
+  title: string
+): Promise<CoverOption[]> {
+  if (!apiKey) return []
+  const platform = STEAM_PLATFORM[store]
+  const seen = new Map<number, CoverOption>()
+
+  const add = (images: SgdbImage[] | null): void => {
+    for (const img of images ?? []) {
+      if (!seen.has(img.id)) {
+        seen.set(img.id, { id: img.id, url: img.url, thumb: img.thumb, width: img.width, height: img.height })
+      }
+    }
+  }
+
+  if (platform) {
+    add(await apiGet<SgdbImage[]>(apiKey, `/grids/${platform}/${appId}?dimensions=600x900`))
+  }
+  const gameId = await resolveSgdbGameId(apiKey, title)
+  if (gameId) {
+    add(await apiGet<SgdbImage[]>(apiKey, `/grids/game/${gameId}?dimensions=600x900`))
+  }
+  return Array.from(seen.values())
+}
+
+async function downloadTo(url: string, destDir: string, baseName: string): Promise<string | null> {
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return null
+    const ext = extname(new URL(url).pathname) || '.png'
+    ensureDir(destDir)
+    const dest = join(destDir, `${baseName}${ext}`)
+    const buf = Buffer.from(await res.arrayBuffer())
+    writeFileSync(dest, buf)
+    return dest
+  } catch {
+    return null
+  }
+}
+
+/** User explicitly picked this image from the right-click picker - download and pin it. */
+export async function chooseCover(
+  gameId: string,
+  url: string
+): Promise<{ path: string; version: number } | null> {
+  loadIndex()
+  const dir = coverGameDir(gameId)
+  const path = await downloadTo(url, dir, 'cover')
+  if (!path) return null
+  const version = Date.now()
+  index[gameId] = { ...index[gameId], coverPath: path, pinned: true, fetchedAt: version }
+  persistIndex()
+  return { path, version }
+}
+
+const STALE_MS = 30 * 24 * 60 * 60 * 1000
+const inFlight = new Map<string, Promise<CoverArtResult>>()
+
+// A whole library's worth of cards mounting at once would otherwise fire dozens of
+// concurrent requests against SteamGridDB - cap it so we stay well under their rate limit.
+const MAX_CONCURRENT = 3
+let activeCount = 0
+const queue: Array<() => void> = []
+
+function acquireSlot(): Promise<void> {
+  if (activeCount < MAX_CONCURRENT) {
+    activeCount++
+    return Promise.resolve()
+  }
+  return new Promise((resolve) => queue.push(resolve))
+}
+
+function releaseSlot(): void {
+  const next = queue.shift()
+  if (next) next()
+  else activeCount--
+}
+
+async function autoFetchAndDownload(
+  apiKey: string,
+  gameId: string,
+  store: StoreKind,
+  appId: string,
+  title: string,
+  fallback: { cover?: string; hero?: string }
+): Promise<{ cover: string | null; hero: string | null }> {
+  const platform = STEAM_PLATFORM[store]
+  const dir = coverGameDir(gameId)
+
+  async function firstGridUrl(): Promise<string | null> {
+    if (!apiKey) return null
+    if (platform) {
+      const byPlatform = await apiGet<SgdbImage[]>(
+        apiKey,
+        `/grids/${platform}/${appId}?dimensions=600x900`
+      )
+      if (byPlatform && byPlatform.length > 0) return byPlatform[0].url
+    }
+    const gameId2 = await resolveSgdbGameId(apiKey, title)
+    if (!gameId2) return null
+    const bySearch = await apiGet<SgdbImage[]>(apiKey, `/grids/game/${gameId2}?dimensions=600x900`)
+    return bySearch && bySearch.length > 0 ? bySearch[0].url : null
+  }
+
+  async function firstHeroUrl(): Promise<string | null> {
+    if (!apiKey) return null
+    if (platform) {
+      const byPlatform = await apiGet<SgdbImage[]>(apiKey, `/heroes/${platform}/${appId}`)
+      if (byPlatform && byPlatform.length > 0) return byPlatform[0].url
+    }
+    const gameId2 = await resolveSgdbGameId(apiKey, title)
+    if (!gameId2) return null
+    const bySearch = await apiGet<SgdbImage[]>(apiKey, `/heroes/game/${gameId2}`)
+    return bySearch && bySearch.length > 0 ? bySearch[0].url : null
+  }
+
+  // SteamGridDB first (better, consistent artwork); if it has nothing - no key, no match,
+  // rate limited - fall back to the store's own art (Heroic's art_square / Epic's
+  // keyImages / ...) so a raw remote URL is never handed to the renderer either way.
+  const [sgdbCover, sgdbHero] = await Promise.all([firstGridUrl(), firstHeroUrl()])
+  const coverUrl = sgdbCover ?? fallback.cover ?? null
+  const heroUrl = sgdbHero ?? fallback.hero ?? null
+
+  const [coverPath, heroPath] = await Promise.all([
+    coverUrl ? downloadTo(coverUrl, dir, 'cover') : Promise.resolve(null),
+    heroUrl ? downloadTo(heroUrl, dir, 'hero') : Promise.resolve(null)
+  ])
+  return { cover: coverPath, hero: heroPath }
+}
+
+export interface CoverArtResult {
+  cover: string | null
+  hero: string | null
+  /** Changes whenever the files on disk change (re-picked art, a refreshed auto-fetch) -
+   *  callers use this to bust the browser's cache for the fixed cover.<ext> filename. */
+  version: number
+}
+
+/**
+ * Returns local file paths (already downloaded) for a game's cover/hero art, fetching
+ * and saving them to disk on first request. Never overwrites a user-pinned choice.
+ *
+ * `fallback` is the store's own art URL (Heroic's art_square, Epic's keyImages, ...) -
+ * used to fill in art locally when SteamGridDB has nothing (or no key is set), so the
+ * renderer is never handed a raw remote URL to hot-link: everything ends up downloaded
+ * once under ~/.config/omnilauncher-linux/covers and served from that path from then on.
+ */
+export async function getCoverArt(
+  apiKey: string,
+  gameId: string,
+  store: StoreKind,
+  appId: string,
+  title: string,
+  fallback: { cover?: string; hero?: string } = {}
+): Promise<CoverArtResult> {
+  loadIndex()
+  const cached = index[gameId]
+  // Files referenced by an older cache index (a previous format, or a manually-cleared
+  // covers folder) may no longer exist on disk - never trust a path without checking.
+  const coverOnDisk = cached?.coverPath && existsSync(cached.coverPath) ? cached.coverPath : null
+  const heroOnDisk = cached?.heroPath && existsSync(cached.heroPath) ? cached.heroPath : null
+  const cachedResult = { cover: coverOnDisk, hero: heroOnDisk, version: cached?.fetchedAt ?? 0 }
+
+  if (cached?.pinned && coverOnDisk) return cachedResult
+  if (cached && (coverOnDisk || heroOnDisk) && Date.now() - cached.fetchedAt < STALE_MS) {
+    return cachedResult
+  }
+  // No SteamGridDB key and nothing to fall back to download either - nothing to do.
+  if (!apiKey && !fallback.cover && !fallback.hero) return cachedResult
+
+  const existing = inFlight.get(gameId)
+  if (existing) return existing
+
+  const promise = (async () => {
+    await acquireSlot()
+    try {
+      const result = await autoFetchAndDownload(apiKey, gameId, store, appId, title, fallback)
+      const version = Date.now()
+      index[gameId] = { coverPath: result.cover ?? undefined, heroPath: result.hero ?? undefined, fetchedAt: version }
+      persistIndex()
+      return { ...result, version }
+    } catch {
+      return cachedResult
+    } finally {
+      releaseSlot()
+      inFlight.delete(gameId)
+    }
+  })()
+  inFlight.set(gameId, promise)
+  return promise
+}

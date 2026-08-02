@@ -1,0 +1,136 @@
+import { useEffect } from 'react'
+import type { UnifiedGame } from '../../../shared/types'
+import { useAppStore } from '../store'
+import { CheckIcon, DownloadIcon, PlayIcon, StopIcon } from './Icons'
+
+function formatBytes(bytes: number): string {
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit++
+  }
+  return `${value.toFixed(value >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`
+}
+
+interface Props {
+  game: UnifiedGame
+  focused?: boolean
+}
+
+export function GameCard({ game, focused }: Props): React.JSX.Element {
+  const cover = useAppStore((s) => s.covers[game.id])
+  const loadCover = useAppStore((s) => s.loadCover)
+  const progress = useAppStore((s) => s.progress[game.id])
+  const install = useAppStore((s) => s.install)
+  const cancelInstall = useAppStore((s) => s.cancelInstall)
+  const launch = useAppStore((s) => s.launch)
+  const manageMode = useAppStore((s) => s.manageMode)
+  const selected = useAppStore((s) => !!s.selectedForManage[game.id])
+  const toggleGameSelected = useAppStore((s) => s.toggleGameSelected)
+  const openCoverPicker = useAppStore((s) => s.openCoverPicker)
+
+  useEffect(() => {
+    void loadCover(game.id)
+  }, [game.id, loadCover])
+
+  // Deliberately not falling back to game.coverUrl (a raw remote URL from the store's own
+  // metadata): every cover is downloaded once to a local file and served from cover://
+  // from then on. Briefly showing the remote image, then swapping to the local file the
+  // instant it lands, is what caused the flash/overlap - so show the placeholder tile
+  // instead until the real (local) art is ready.
+  const coverUrl = cover?.cover
+
+  function onCardClick(): void {
+    if (manageMode && game.isInstalled) toggleGameSelected(game.id)
+  }
+
+  function onContextMenu(e: React.MouseEvent): void {
+    e.preventDefault()
+    if (manageMode) return
+    void openCoverPicker(game.id)
+  }
+
+  return (
+    <div
+      className={`game-card${focused ? ' focused' : ''}${manageMode ? ' manageable' : ''}${selected ? ' selected' : ''}`}
+      data-game-id={game.id}
+      onClick={onCardClick}
+      onContextMenu={onContextMenu}
+    >
+      <div className="card-art">
+        {manageMode ? (
+          game.isInstalled && (
+            <div className={`select-check${selected ? ' checked' : ''}`}>
+              {selected && <CheckIcon size={13} />}
+            </div>
+          )
+        ) : game.isInstalling ? (
+          <div className="art-progress-fill" style={{ width: `${progress?.percent ?? 0}%` }} />
+        ) : null}
+
+        {coverUrl ? (
+          <img className="cover" src={coverUrl} alt={game.title} loading="lazy" />
+        ) : (
+          <div className="cover-fallback">
+            <span>{game.title}</span>
+          </div>
+        )}
+      </div>
+
+      <div className="card-footer">
+        <div className="card-footer-main">
+          <div className="card-title">{game.title}</div>
+          {game.isInstalling && progress ? (
+            <div className="card-subtext">
+              {progress.percent !== undefined ? `${progress.percent.toFixed(0)}%` : 'Starting…'}
+              {progress.bytesTotal !== undefined &&
+                ` · ${formatBytes(progress.bytesDone ?? 0)} / ${formatBytes(progress.bytesTotal)}`}
+            </div>
+          ) : (
+            <div className="card-subtext">{game.isInstalled ? 'Installed' : 'Not installed'}</div>
+          )}
+        </div>
+
+        {!manageMode &&
+          (game.isInstalling ? (
+            <button
+              className="round-btn round-btn-stop"
+              title="Cancel install"
+              onClick={(e) => {
+                e.stopPropagation()
+                cancelInstall(game.id)
+              }}
+            >
+              <StopIcon size={14} />
+            </button>
+          ) : game.isInstalled ? (
+            <button
+              className="round-btn round-btn-play"
+              disabled={!game.canLaunch}
+              title={game.canLaunch ? 'Play' : 'Running…'}
+              onClick={(e) => {
+                e.stopPropagation()
+                launch(game.id)
+              }}
+            >
+              <PlayIcon size={14} />
+            </button>
+          ) : (
+            <button
+              className="round-btn round-btn-install"
+              disabled={!game.canInstall}
+              title="Install"
+              onClick={(e) => {
+                e.stopPropagation()
+                install(game.id)
+              }}
+            >
+              <DownloadIcon size={14} />
+            </button>
+          ))}
+      </div>
+    </div>
+  )
+}
