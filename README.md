@@ -1,12 +1,11 @@
 <p align="center">
-  <img src="resources/omni.png" width="128" height="128" alt="OmniLauncher icon">
+  <img src="omni.png">
 </p>
 
 <h1 align="center">OmniLauncher</h1>
 
 <p align="center">A third party open source game launcher for Linux.</p>
 
----
 
 OmniLauncher brings your Steam, GOG, Epic Games, and Amazon Games libraries together in a
 single, unified interface. It doesn't replace those clients — it drives them: Steam directly,
