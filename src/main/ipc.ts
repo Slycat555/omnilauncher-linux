@@ -1,0 +1,197 @@
+import { BrowserWindow, ipcMain, shell } from 'electron'
+import type {
+  InstallProgressEvent,
+  LaunchStateEvent,
+  SettingsPatch,
+  StoreAuthStatus,
+  UnifiedGame
+} from '../shared/types'
+import {
+  amazonLoggedIn,
+  epicLoggedIn,
+  gogLoggedIn,
+  loginAmazon,
+  loginEpic,
+  loginGog,
+  logoutAmazon,
+  logoutEpic,
+  logoutGog
+} from './clients/storeAuth'
+import { loadSettings, saveSettings } from './config'
+import { localCoverUrl } from './coverProtocol'
+import { installManager, type RuntimeContext as InstallCtx } from './installManager'
+import { launchGame, type RuntimeContext as LaunchCtx } from './launchManager'
+import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } from './library'
+import { chooseCover, getCoverArt, searchCoverOptions } from './steamgriddb'
+
+let gameIndex = new Map<string, UnifiedGame>()
+
+function indexGames(games: UnifiedGame[]): void {
+  gameIndex = new Map(games.map((g) => [g.id, g]))
+}
+
+function broadcast(channel: string, payload: unknown): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    win.webContents.send(channel, payload)
+  }
+}
+
+async function doRefresh(): Promise<UnifiedGame[]> {
+  const { games, warnings } = await refreshLibrary()
+  indexGames(games)
+  for (const warning of warnings) broadcast('app:warning', warning)
+  return games
+}
+
+/** Ensures a plain, guaranteed-cloneable Error crosses the IPC boundary on failure. */
+function safeHandle<Args extends unknown[], R>(
+  channel: string,
+  fn: (event: Electron.IpcMainInvokeEvent, ...args: Args) => Promise<R>
+): void {
+  ipcMain.handle(channel, async (event, ...args: Args) => {
+    try {
+      return await fn(event, ...args)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      console.error(`Error in IPC handler '${channel}':`, message)
+      throw new Error(message)
+    }
+  })
+}
+
+export function registerIpcHandlers(): void {
+  indexGames(getCachedLibrary())
+
+  safeHandle('detect:all', async () => detectAll())
+
+  safeHandle('library:get', async () => getCachedLibrary())
+
+  safeHandle('library:refresh', async () => doRefresh())
+
+  safeHandle('settings:get', async () => loadSettings())
+
+  safeHandle('settings:save', async (_e, patch: SettingsPatch) => saveSettings(patch))
+
+  safeHandle('covers:get', async (_e, gameId: string) => {
+    const settings = loadSettings()
+    const game = gameIndex.get(gameId)
+    if (!game) return { cover: null, hero: null }
+    const result = await getCoverArt(
+      settings.steamGridDbApiKey,
+      game.id,
+      game.store,
+      game.appId,
+      game.title,
+      { cover: game.coverUrl, hero: game.heroUrl }
+    )
+    return {
+      cover: result.cover ? localCoverUrl(result.cover, result.version) : null,
+      hero: result.hero ? localCoverUrl(result.hero, result.version) : null
+    }
+  })
+
+  safeHandle('covers:search', async (_e, gameId: string) => {
+    const settings = loadSettings()
+    const game = gameIndex.get(gameId)
+    if (!game || !settings.steamGridDbApiKey) return []
+    return searchCoverOptions(settings.steamGridDbApiKey, game.store, game.appId, game.title)
+  })
+
+  safeHandle('covers:choose', async (_e, gameId: string, url: string) => {
+    const result = await chooseCover(gameId, url)
+    if (!result) throw new Error('Could not download that image.')
+    return localCoverUrl(result.path, result.version)
+  })
+
+  safeHandle('game:install', async (_e, gameId: string) => {
+    const game = gameIndex.get(gameId)
+    if (!game) throw new Error('Unknown game')
+    const { steam, heroic } = await getRuntimeDetections()
+    const settings = loadSettings()
+    const ctx: InstallCtx = {
+      steam,
+      heroic,
+      installBaseDir: settings.defaultInstallBasePath
+    }
+    const onProgress = (evt: InstallProgressEvent): void => broadcast('install:progress', evt)
+    try {
+      await installManager.install(game, ctx, onProgress)
+    } finally {
+      broadcast('library:updated', await doRefresh())
+    }
+  })
+
+  safeHandle('game:cancelInstall', async (_e, gameId: string) => {
+    installManager.cancel(gameId)
+  })
+
+  safeHandle('game:uninstall', async (_e, gameId: string) => {
+    const game = gameIndex.get(gameId)
+    if (!game) throw new Error('Unknown game')
+    const { steam, heroic } = await getRuntimeDetections()
+    const settings = loadSettings()
+    const ctx: InstallCtx = {
+      steam,
+      heroic,
+      installBaseDir: settings.defaultInstallBasePath
+    }
+    const onProgress = (evt: InstallProgressEvent): void => broadcast('install:progress', evt)
+    try {
+      await installManager.uninstall(game, ctx, onProgress)
+    } finally {
+      broadcast('library:updated', await doRefresh())
+    }
+  })
+
+  safeHandle('game:launch', async (_e, gameId: string) => {
+    const game = gameIndex.get(gameId)
+    if (!game) throw new Error('Unknown game')
+    const { steam, heroic } = await getRuntimeDetections()
+    const ctx: LaunchCtx = { steam, heroic }
+    const onState = (evt: LaunchStateEvent): void => broadcast('launch:state', evt)
+    launchGame(game, ctx, onState)
+  })
+
+  safeHandle('shell:openPath', async (_e, path: string) => {
+    await shell.openPath(path)
+  })
+
+  safeHandle('shell:openExternal', async (_e, url: string) => {
+    await shell.openExternal(url)
+  })
+
+  safeHandle('auth:status', async (): Promise<StoreAuthStatus> => {
+    const { heroic } = await getRuntimeDetections()
+    return { gog: gogLoggedIn(heroic), epic: epicLoggedIn(heroic), amazon: amazonLoggedIn(heroic) }
+  })
+
+  safeHandle('auth:gog', async () => {
+    const { heroic } = await getRuntimeDetections()
+    await loginGog(heroic)
+  })
+
+  safeHandle('auth:epic', async () => {
+    const { heroic } = await getRuntimeDetections()
+    await loginEpic(heroic)
+  })
+
+  safeHandle('auth:amazon', async () => {
+    const { heroic } = await getRuntimeDetections()
+    await loginAmazon(heroic)
+  })
+
+  safeHandle('auth:logoutGog', async () => {
+    const { heroic } = await getRuntimeDetections()
+    logoutGog(heroic)
+  })
+
+  safeHandle('auth:logoutEpic', async () => {
+    const { heroic } = await getRuntimeDetections()
+    await logoutEpic(heroic)
+  })
+
+  safeHandle('auth:logoutAmazon', async () => {
+    const { heroic } = await getRuntimeDetections()
+    await logoutAmazon(heroic)
+  })
+}

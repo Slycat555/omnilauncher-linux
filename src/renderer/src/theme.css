@@ -1,0 +1,591 @@
+:root {
+  --bg-0: #121212;
+  --bg-1: #1a1a1a;
+  --bg-2: #232323;
+  --bg-3: #2e2e2e;
+  --border: #333333;
+  --text-0: #f0f0f0;
+  --text-1: #b8b8b8;
+  --text-2: #838383;
+  --accent: #5b8cff;
+  --accent-dim: #39406b;
+  /* Vivid, fully-saturated action colours for the card buttons. */
+  --action-install: #1573ff;
+  --action-play: #00c853;
+  --action-stop: #ff1f3d;
+  --good: #34c77b;
+  --bad: #e5534b;
+  --warn: #e5b13b;
+  --radius: 10px;
+  --font: -apple-system, 'Segoe UI', 'Inter', Roboto, Ubuntu, sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg-0);
+  color: var(--text-0);
+  font-family: var(--font);
+  font-size: 14px;
+  overflow: hidden;
+  user-select: none;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--bg-3);
+  border-radius: 6px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-dim);
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+}
+
+.app-shell {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  grid-template-rows: 56px 1fr;
+  grid-template-areas:
+    'sidebar topbar'
+    'sidebar main';
+  height: 100%;
+}
+
+/* ---------- top bar ---------- */
+.topbar {
+  grid-area: topbar;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 0 18px;
+  border-bottom: 1px solid var(--border);
+  -webkit-app-region: drag;
+}
+.topbar > * {
+  -webkit-app-region: no-drag;
+}
+.search-box {
+  flex: 1;
+  max-width: 420px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 12px;
+  color: var(--text-1);
+}
+.search-box input {
+  flex: 1;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--text-0);
+  font-size: 13px;
+}
+.icon-btn {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text-1);
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+.icon-btn:hover {
+  background: var(--bg-3);
+  color: var(--text-0);
+}
+.icon-btn.spinning svg {
+  animation: spin 1s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ---------- sidebar ---------- */
+.sidebar {
+  grid-area: sidebar;
+  border-right: 1px solid var(--border);
+  padding: 20px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 26px;
+  overflow-y: auto;
+}
+.nav-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.brand {
+  font-weight: 700;
+  font-size: 15px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-0);
+}
+.brand .dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+}
+.nav-group-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+  padding: 0 8px;
+  margin-bottom: 6px;
+}
+.nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text-1);
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  text-align: left;
+}
+.nav-item:hover {
+  background: var(--bg-2);
+  color: var(--text-0);
+}
+.nav-item.active {
+  background: var(--bg-2);
+  color: var(--text-0);
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+.nav-item .count {
+  color: var(--text-2);
+  font-size: 12px;
+}
+.sidebar-footer {
+  margin-top: auto;
+}
+
+/* ---------- main / grid ---------- */
+.main {
+  grid-area: main;
+  overflow-y: auto;
+  padding: 20px 24px 40px;
+  position: relative;
+}
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 60vh;
+  color: var(--text-2);
+  gap: 10px;
+  text-align: center;
+}
+
+.toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%);
+  max-width: min(520px, calc(100vw - 48px));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  background: #201216;
+  border: 1px solid var(--bad);
+  border-radius: 10px;
+  color: var(--text-0);
+  font-size: 13px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  z-index: 30;
+}
+
+.game-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 16px;
+}
+
+.game-card {
+  border-radius: var(--radius);
+  overflow: hidden;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
+}
+.game-card:hover {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+}
+.game-card.focused {
+  transform: translateY(-3px);
+  border-color: var(--accent);
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+}
+.game-card.manageable {
+  cursor: pointer;
+}
+.game-card.selected {
+  border-color: var(--action-install);
+  box-shadow: 0 0 0 2px var(--action-install);
+}
+
+/* ---- artwork: image only, no text/buttons ever drawn over it ---- */
+.card-art {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.card-art img.cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.card-art .cover-fallback {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 10px;
+  text-align: center;
+  font-size: 13px;
+  color: var(--text-1);
+  background: linear-gradient(160deg, var(--bg-3), var(--bg-1));
+}
+.art-progress-fill {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 4px;
+  background: var(--action-install);
+  transition: width 0.25s ease;
+  z-index: 1;
+}
+.select-check {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  border: 2px solid rgba(255, 255, 255, 0.75);
+  background: rgba(10, 11, 15, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+.select-check.checked {
+  background: var(--action-install);
+  border-color: var(--action-install);
+}
+
+/* ---- footer: title + status live off the artwork, in a plain strip below ---- */
+.card-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+}
+.card-footer-main {
+  flex: 1;
+  min-width: 0;
+}
+.card-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card-subtext {
+  font-size: 10.5px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-top: 1px;
+  font-variant-numeric: tabular-nums;
+}
+
+.round-btn {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  transition: transform 0.1s ease, filter 0.1s ease;
+}
+.round-btn:hover:not(:disabled) {
+  transform: scale(1.09);
+  filter: brightness(1.12);
+}
+.round-btn:disabled {
+  opacity: 0.55;
+}
+.round-btn-install {
+  background: var(--action-install);
+}
+.round-btn-play {
+  background: var(--action-play);
+}
+.round-btn-stop {
+  background: var(--action-stop);
+}
+
+/* ---- manage-mode bulk-uninstall bar (replaces the search box in the topbar) ---- */
+.manage-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+.manage-bar-label {
+  font-size: 13px;
+  color: var(--text-1);
+}
+.btn-danger-solid {
+  background: var(--action-stop);
+  color: #fff;
+}
+.btn-danger-solid:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+/* ---- SteamGridDB cover picker ---- */
+.cover-picker-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+.cover-picker {
+  width: min(720px, 92vw);
+  max-height: 80vh;
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cover-picker-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.cover-picker-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.cover-picker-subtitle {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 2px;
+}
+.cover-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+.cover-picker-option {
+  /* Deliberately not using `aspect-ratio` here: in this Chromium build, CSS Grid's
+     auto-row-track sizing does not pick it up correctly when columns are auto-fill/fr -
+     the track sizes as if every tile were square, while the tile itself still paints at
+     the real 2:3 height. Rows ended up spaced ~126px apart for 190px-tall tiles, so each
+     row visually overlapped the next. The classic padding-percentage trick sizes the box
+     from its own (grid-resolved) width with no such circular dependency, so grid picks
+     the correct row height. */
+  position: relative;
+  display: block;
+  width: 100%;
+  height: 0;
+  padding-bottom: 150%;
+  border: 2px solid transparent;
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--bg-2);
+}
+.cover-picker-option:hover {
+  border-color: var(--accent);
+}
+.cover-picker-option img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.btn {
+  border: none;
+  border-radius: 8px;
+  padding: 10px 18px;
+  font-size: 13px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.btn-primary {
+  background: var(--accent);
+  color: white;
+}
+.btn-primary:hover {
+  filter: brightness(1.08);
+}
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.section-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+
+.console {
+  background: #08090c;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 11.5px;
+  color: #9dffb0;
+  max-height: 220px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.console .line.err {
+  color: #ff9d9d;
+}
+.console-empty {
+  color: var(--text-2);
+  font-style: italic;
+}
+
+/* ---------- settings ---------- */
+.settings-page {
+  max-width: 720px;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+.settings-page h1 {
+  font-size: 20px;
+  margin: 0;
+}
+.client-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+.status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  margin-right: 8px;
+}
+.status-dot.on {
+  background: var(--good);
+}
+.status-dot.off {
+  background: var(--bad);
+}
+.toggle-row {
+  cursor: pointer;
+}
+.toggle-row .hint {
+  margin-top: 2px;
+}
+.toggle-row input[type='checkbox'] {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.field label {
+  font-size: 12px;
+  color: var(--text-1);
+}
+.field input {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: var(--text-0);
+  font-size: 13px;
+  outline: none;
+}
+.field input:focus {
+  border-color: var(--accent);
+}
+.field .hint {
+  color: var(--text-2);
+  font-size: 11px;
+}
