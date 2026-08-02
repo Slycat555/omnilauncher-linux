@@ -1,15 +1,22 @@
-import { app, shell, BrowserWindow } from 'electron'
+import { app, shell, BrowserWindow, Tray, Menu, nativeImage } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/omni.png?asset'
+import trayIcon from '../../resources/tray-icon.png?asset'
 import { registerCoverProtocolHandler, registerCoverProtocolPrivilege } from './coverProtocol'
 import { registerIpcHandlers } from './ipc'
 
 registerCoverProtocolPrivilege()
 
+let mainWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+// Set by the tray's own "Quit" item just before calling app.quit() - the only way the
+// close handler below should ever let the window actually close instead of hiding it.
+let isQuitting = false
+
 function createWindow(): void {
   // Create the browser window.
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
     minWidth: 900,
@@ -25,7 +32,17 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+    mainWindow?.show()
+  })
+
+  // The X/close button backgrounds the app to the tray instead of quitting it - a
+  // running install or game shouldn't be torn down just because the window closed, the
+  // same reasoning as any other tray-resident app. Only the tray's own Quit item (or an
+  // OS-level kill) should end the process.
+  mainWindow.on('close', (e) => {
+    if (isQuitting) return
+    e.preventDefault()
+    mainWindow?.hide()
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -40,6 +57,38 @@ function createWindow(): void {
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
   }
+}
+
+function createTray(): void {
+  // The full-res app icon (omni.png) is 1024px and renders oversized/blurry when handed
+  // straight to the tray - Electron doesn't intelligently downscale it the way a window
+  // icon gets scaled by the compositor. A dedicated 24px asset (Steam's own tray icons
+  // use the same hicolor/24x24 convention) keeps it crisp and correctly sized instead.
+  tray = new Tray(nativeImage.createFromPath(trayIcon))
+  tray.setToolTip('OmniLauncher')
+
+  const showWindow = (): void => {
+    if (!mainWindow) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  }
+
+  tray.setContextMenu(
+    Menu.buildFromTemplate([
+      { label: 'Open OmniLauncher', click: showWindow },
+      { type: 'separator' },
+      {
+        label: 'Quit',
+        click: () => {
+          isQuitting = true
+          app.quit()
+        }
+      }
+    ])
+  )
+
+  tray.on('click', showWindow)
 }
 
 // This method will be called when Electron has finished
@@ -60,6 +109,7 @@ app.whenReady().then(() => {
   registerIpcHandlers()
 
   createWindow()
+  createTray()
 
   app.on('activate', function () {
     // On macOS it's common to re-create a window in the app when the
@@ -68,9 +118,10 @@ app.whenReady().then(() => {
   })
 })
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
+// The window's own 'close' handler hides it to the tray rather than destroying it, so
+// in normal use this never fires from the X button - only if the window is destroyed
+// some other way (e.g. during quit itself), in which case there's nothing left running
+// to keep the app alive for anyway.
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit()
