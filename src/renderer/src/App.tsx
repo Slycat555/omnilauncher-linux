@@ -94,6 +94,10 @@ function App(): React.JSX.Element {
   useEffect(() => {
     focusSourceRef.current = 'nav'
     setFocusedIndex(0)
+    // Switching tabs/filters is a new view, not a navigation step within the current one -
+    // it should always land at the top immediately, never carry over the previous tab's
+    // scroll position or animate the transition the way keyboard/gamepad focus-follow does.
+    gridRef.current?.scrollTo({ top: 0, behavior: 'instant' })
   }, [storeFilter, installedOnly, searchQuery])
 
   // Measures actual rendered row height (card + gap) from whatever .game-card happens
