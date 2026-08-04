@@ -56,8 +56,9 @@ export function Sidebar({
             onStoreFilter('all')
           }}
         >
-          <span>
-            <GridIcon size={14} /> &nbsp;All games
+          <span className="nav-item-label">
+            <GridIcon size={14} />
+            All games
           </span>
           <span className="count">{countFor('all')}</span>
         </button>
@@ -91,8 +92,9 @@ export function Sidebar({
           className={`nav-item${view === 'settings' ? ' active' : ''}`}
           onClick={() => onView('settings')}
         >
-          <span>
-            <SettingsIcon size={14} /> &nbsp;Settings
+          <span className="nav-item-label">
+            <SettingsIcon size={14} />
+            Settings
           </span>
         </button>
       </div>

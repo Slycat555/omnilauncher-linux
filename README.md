@@ -16,23 +16,30 @@ backends (`gogdl`, `legendary`, `nile`).
 
 - **One library, every store** — Steam, GOG, Epic, and Amazon games in a single grid, filterable
   by store or installed status.
+
 - **NFC tag launching** — write a game to a physical NFC tag with a PN532 USB reader, then tap it
   to launch that game instantly. Handy for a couch/arcade-cabinet setup where digging through a
   menu isn't the point. Tested with a PN532 USB reader
   ([Amazon](https://www.amazon.com/dp/B0DKTK9VS9), [eBay](https://www.ebay.com/itm/198168802345)).
+
 - **Install, launch, and uninstall from one place** — no store client window getting in the way.
   Confirmation dialogs Steam requires (install/uninstall) are handled and backgrounded
   automatically once they're no longer needed.
+
 - **Real progress, always** — install progress is read live from each backend, including Steam's
   own on-disk state, so the UI never lies about what's actually happening.
+
 - **In-app store login** — log in to GOG, Epic, and Amazon without leaving the app; the
   authorization code is captured automatically, no copy-pasting required. Steam login stays in
   the Steam client itself, where it actually lives.
+
 - **Cover art** — fetched from [SteamGridDB](https://www.steamgriddb.com/) and cached locally, so
   art never depends on a live connection to the store's own CDN.
+
 - **Controller-first navigation** — full gamepad support with D-pad/stick navigation, shoulder
   buttons to cycle library tabs, and automatic input lockout while a game is running so a
   controller input never accidentally lands on the launcher instead of your game.
+
 - **TV-friendly UI scaling** — a display scale setting for couch/TV use, independent of your
   desktop's own scaling.
 
