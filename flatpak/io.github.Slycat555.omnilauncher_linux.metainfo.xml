@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.Slycat555.omnilauncher_linux</id>
+  <name>OmniLauncher</name>
+  <summary>Unified game launcher for Steam and Heroic (GOG/Epic/Amazon)</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <description>
+    <p>
+      OmniLauncher brings your Steam, GOG, Epic, and Amazon Games libraries
+      together in a single, gamepad-friendly interface. It wraps your
+      existing Steam installation directly and uses Heroic Games Launcher's
+      bundled backends (legendary, gogdl, nile) to install and launch games
+      from other stores, so it works alongside tools you may already have
+      installed without duplicating them.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.Slycat555.omnilauncher_linux.desktop</launchable>
+  <screenshots>
+    <screenshot type="default">
+      <image>https://raw.githubusercontent.com/Slycat555/omnilauncher-linux/main/omnilauncher.png</image>
+    </screenshot>
+  </screenshots>
+  <url type="homepage">https://github.com/Slycat555/omnilauncher-linux</url>
+  <url type="bugtracker">https://github.com/Slycat555/omnilauncher-linux/issues</url>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="1.0.0" date="2026-08-04">
+      <description>
+        <p>Initial release.</p>
+      </description>
+    </release>
+  </releases>
+</component>

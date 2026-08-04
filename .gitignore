@@ -5,3 +5,6 @@ out
 .eslintcache
 *.log*
 *.tsbuildinfo
+flatpak/.flatpak-builder
+flatpak/build-dir
+flatpak/repo
