@@ -194,6 +194,16 @@ button {
   color: var(--text-2);
   font-size: 12px;
 }
+/* An inline SVG icon next to text sits on its default baseline, which doesn't line up
+   with the text's own baseline the way two text runs would - that's what read as the
+   label being "slightly down and off center" wherever an icon preceded it (All games,
+   Settings). Flex + align-items: center vertically centers the icon and text against
+   each other directly instead of relying on baseline alignment. */
+.nav-item-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
 .sidebar-footer {
   margin-top: auto;
 }

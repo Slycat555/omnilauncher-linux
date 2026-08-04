@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { CoverPicker } from './components/CoverPicker'
 import { GameDetailsPanel } from './components/GameDetailsPanel'
 import { GameGrid } from './components/GameGrid'
@@ -36,7 +36,20 @@ function App(): React.JSX.Element {
 
   const [view, setView] = useState<'library' | 'settings'>('library')
   const [focusedIndex, setFocusedIndex] = useState(0)
+  // Mouse hover moves the same focus keyboard/gamepad nav uses (so the outline follows
+  // whichever input moved most recently - see GameGrid's onMouseEnter), but unlike
+  // keyboard/gamepad it must never drive scrolling: nothing about moving the mouse over
+  // an already-visible card should yank the scroll position out from under it. Tracked
+  // outside React state (a plain ref, not something a render depends on) since it's
+  // consulted only inside the scroll-follow effect below, not rendered anywhere.
+  const focusSourceRef = useRef<'mouse' | 'nav'>('nav')
   const gridRef = useRef<HTMLDivElement>(null)
+  // Measured (not computed from CSS) - a card's real height depends on content (title
+  // wrapping, "Installing..." subtext), not just fixed constants. Shared between the
+  // scroll-follow effect below and GameGrid's own virtualization windowing, so both
+  // agree on exactly the same row height rather than each guessing independently and
+  // risking drift between "where the math thinks row N is" and "where it actually is".
+  const [rowHeight, setRowHeight] = useState(0)
 
   useEffect(() => {
     void init()
@@ -78,16 +91,50 @@ function App(): React.JSX.Element {
   }, [visibleGames, storeFilter, installedOnly, searchQuery])
 
   useEffect(() => {
+    focusSourceRef.current = 'nav'
     setFocusedIndex(0)
   }, [storeFilter, installedOnly, searchQuery])
+
+  // Measures actual rendered row height (card + gap) from whatever .game-card happens
+  // to be mounted right now - GameGrid only mounts cards near the viewport (see its own
+  // comment), so this can't assume a specific card/row is present, just that at least
+  // one is. Re-measured on layout changes (columns changing reflows card width, which
+  // changes card height too since art is a fixed 2:3 aspect ratio).
+  useLayoutEffect(() => {
+    const container = gridRef.current
+    if (!container) return
+    const recompute = (): void => {
+      const card = container.querySelector<HTMLElement>('.game-card')
+      if (card) setRowHeight(card.getBoundingClientRect().height + 16)
+    }
+    recompute()
+    const ro = new ResizeObserver(recompute)
+    ro.observe(container)
+    return () => ro.disconnect()
+  }, [filteredGames])
 
   // Moving focus with a controller/keyboard has no mouse wheel to fall back on, so the
   // focused card has to bring itself into view - the .main container scrolls, but
   // nothing was ever telling it to follow focus.
+  //
+  // Computed by row math (index / columns * rowHeight), not scrollIntoView() on a
+  // queried DOM node: GameGrid virtualizes now (only mounts cards near the viewport),
+  // so the focused card's element frequently doesn't exist in the DOM at all when focus
+  // jumps there directly (e.g. a bumper press skipping several rows) - querying for it
+  // would silently find nothing and never scroll, stranding keyboard/gamepad
+  // navigation on an off-screen card with no way to see where focus actually went.
+  //
+  // Skipped entirely when the mouse moved focus (focusSourceRef.current === 'mouse'):
+  // hovering is expected to move the highlight outline without ever driving scroll -
+  // the previous version unconditionally snapped to the very top/bottom whenever focus
+  // landed on the first/last row, which meant just hovering a card in that row (even
+  // one already fully visible) yanked the scroll position, which is what read as "the
+  // mouse makes the library scroll."
   useEffect(() => {
     const container = gridRef.current
     const game = filteredGames[focusedIndex]
-    if (!container || !game) return
+    if (!container || !game || rowHeight === 0) return
+    if (focusSourceRef.current === 'mouse') return
     const cols = columns()
     // `scrollIntoView({ block: 'nearest' })` only scrolls the minimum distance needed to
     // clear the viewport edge, so the top/bottom row never actually reaches the true edge
@@ -101,10 +148,22 @@ function App(): React.JSX.Element {
       container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
       return
     }
-    const el = container.querySelector(`[data-game-id="${CSS.escape(game.id)}"]`)
-    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    const row = Math.floor(focusedIndex / cols)
+    const rowTop = row * rowHeight
+    const rowBottom = rowTop + rowHeight
+    const viewTop = container.scrollTop
+    const viewBottom = viewTop + container.clientHeight
+    // Manual "nearest" equivalent: only scroll if the row isn't already fully visible,
+    // and scroll by exactly the distance needed to bring the nearer edge into view -
+    // matches scrollIntoView({block: 'nearest'})'s behavior without needing the actual
+    // element.
+    if (rowTop < viewTop) {
+      container.scrollTo({ top: rowTop, behavior: 'smooth' })
+    } else if (rowBottom > viewBottom) {
+      container.scrollTo({ top: rowBottom - container.clientHeight, behavior: 'smooth' })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [focusedIndex, filteredGames])
+  }, [focusedIndex, filteredGames, rowHeight])
 
   function columns(): number {
     const el = gridRef.current
@@ -114,6 +173,7 @@ function App(): React.JSX.Element {
 
   function move(dir: 'up' | 'down' | 'left' | 'right'): void {
     if (view !== 'library' || filteredGames.length === 0) return
+    focusSourceRef.current = 'nav'
     const cols = columns()
     setFocusedIndex((i) => {
       let next = i
@@ -210,7 +270,12 @@ function App(): React.JSX.Element {
           <GameGrid
             games={filteredGames}
             focusedId={focusedGame?.id ?? null}
-            onHoverIndex={setFocusedIndex}
+            onHoverIndex={(i) => {
+              focusSourceRef.current = 'mouse'
+              setFocusedIndex(i)
+            }}
+            scrollContainer={gridRef.current}
+            rowHeight={rowHeight}
           />
         )}
       </div>
