@@ -1,5 +1,5 @@
 import { execFile } from 'child_process'
-import { existsSync } from 'fs'
+import { existsSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { promisify } from 'util'
@@ -94,6 +94,31 @@ export function gogdlManifestPath(det: HeroicDetection, appId: string): string |
 export function legendaryInstalledJsonPath(det: HeroicDetection): string | null {
   if (!det.configDir) return null
   return join(det.configDir, RUNNER_CONFIG_SUBDIR.legendary, 'legendary', 'installed.json')
+}
+
+/** Heroic's own configured default install directory (its Settings > General >
+ *  "Default Installation Path") - read directly from its config.json rather than using
+ *  a separate app-owned directory. Installing anywhere else was a real bug: this app's
+ *  installs landed in its own settings-configured folder instead of wherever real
+ *  Heroic actually looks, so Heroic's own UI showed those exact titles as "Game not
+ *  available" (confirmed directly against a real Heroic library - Rocket League,
+ *  Cuphead, Boxes: Lost Fragments, and KOTOR all showed that state, matching every game
+ *  installed through this app rather than through Heroic itself). legendary/gogdl/nile
+ *  are the same actual binaries and config Heroic uses (see runnerEnv above) - the
+ *  install location is the one place this app was diverging from "just link into what
+ *  Heroic already does" instead of actually doing that. */
+export function heroicDefaultInstallPath(det: HeroicDetection): string {
+  const fallback = join(homedir(), 'Games', 'Heroic')
+  if (!det.configDir) return fallback
+  try {
+    const raw = readFileSync(join(det.configDir, 'config.json'), 'utf-8')
+    const parsed = JSON.parse(raw) as { defaultInstallPath?: unknown }
+    return typeof parsed.defaultInstallPath === 'string' && parsed.defaultInstallPath
+      ? parsed.defaultInstallPath
+      : fallback
+  } catch {
+    return fallback
+  }
 }
 
 const NATIVE_HEROIC_RESOURCE_ROOTS = [

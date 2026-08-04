@@ -129,12 +129,7 @@ export function registerIpcHandlers(): void {
     const game = gameIndex.get(gameId)
     if (!game) throw new Error('Unknown game')
     const { steam, heroic } = await getRuntimeDetections()
-    const settings = loadSettings()
-    const ctx: InstallCtx = {
-      steam,
-      heroic,
-      installBaseDir: settings.defaultInstallBasePath
-    }
+    const ctx: InstallCtx = { steam, heroic }
     const onProgress = (evt: InstallProgressEvent): void => broadcast('install:progress', evt)
     try {
       await installManager.install(game, ctx, onProgress)
@@ -151,12 +146,7 @@ export function registerIpcHandlers(): void {
     const game = gameIndex.get(gameId)
     if (!game) throw new Error('Unknown game')
     const { steam, heroic } = await getRuntimeDetections()
-    const settings = loadSettings()
-    const ctx: InstallCtx = {
-      steam,
-      heroic,
-      installBaseDir: settings.defaultInstallBasePath
-    }
+    const ctx: InstallCtx = { steam, heroic }
     const onProgress = (evt: InstallProgressEvent): void => broadcast('install:progress', evt)
     try {
       await installManager.uninstall(game, ctx, onProgress)

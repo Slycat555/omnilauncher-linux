@@ -3,7 +3,13 @@ import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs
 import { dirname, join } from 'path'
 import { promisify } from 'util'
 import type { GamePlatform, StoreKind, UnifiedGame } from '../../shared/types'
-import { gogdlManifestPath, legendaryInstalledJsonPath, runnerEnv, type HeroicDetection } from './detect'
+import {
+  gogdlManifestPath,
+  heroicDefaultInstallPath,
+  legendaryInstalledJsonPath,
+  runnerEnv,
+  type HeroicDetection
+} from './detect'
 
 const execFileP = promisify(execFile)
 
@@ -189,13 +195,15 @@ export function unmarkGogInstalled(det: HeroicDetection, appId: string): void {
 
 export function buildGogInstallCommand(
   det: HeroicDetection,
-  game: UnifiedGame,
-  installBaseDir: string
+  game: UnifiedGame
 ): { bin: string; args: string[]; env: NodeJS.ProcessEnv; installPath: string } | null {
   if (!det.gogdlBin) return null
   const auth = gogAuthConfigPath(det)
   if (!auth) return null
-  const target = join(installBaseDir, 'GOG', sanitizeFolderName(game.title))
+  // Installs into Heroic's own configured default library, not a separate app-owned
+  // directory - see heroicDefaultInstallPath's doc comment for why that split caused
+  // real Heroic to show these exact titles as "Game not available".
+  const target = join(heroicDefaultInstallPath(det), 'GOG', sanitizeFolderName(game.title))
   return {
     bin: det.gogdlBin,
     args: [
@@ -445,30 +453,41 @@ export async function readEpicLibrary(det: HeroicDetection): Promise<UnifiedGame
 
 export function buildEpicInstallCommand(
   det: HeroicDetection,
-  game: UnifiedGame,
-  installBaseDir: string
+  game: UnifiedGame
 ): { bin: string; args: string[]; env: NodeJS.ProcessEnv } | null {
   if (!det.legendaryBin) return null
+  // Installs into Heroic's own configured default library, not a separate app-owned
+  // directory - see heroicDefaultInstallPath's doc comment for why that split caused
+  // real Heroic to show these exact titles as "Game not available".
   return {
     bin: det.legendaryBin,
-    args: ['-y', 'install', game.appId, '--base-path', join(installBaseDir, 'Epic')],
+    args: ['-y', 'install', game.appId, '--base-path', join(heroicDefaultInstallPath(det), 'Epic')],
     env: runnerEnv(det, 'legendary')
   }
 }
 
-interface LegendaryInstalledEntry {
-  install_path: string
-  executable: string
-}
-
 /**
- * legendary's `launch --wine <proton>` invokes the Proton script directly on the exe
- * with no verb (`proton '<exe>.exe' <game args>`) - Proton requires a verb
- * (run/waitforexitandrun/...) as its first argument, so that call is invalid and either
- * errors immediately or silently no-ops, and it sets WINEPREFIX rather than the
- * STEAM_COMPAT_* vars Proton actually reads. Same root cause as the documented GOG
- * issue above; the fix is the same too - bypass legendary for this one step and invoke
- * the resolved Proton/Wine runtime directly against the installed exe.
+ * Launches through `legendary launch` itself, not by resolving the installed exe and
+ * invoking Proton/Wine on it directly - a real, confirmed bug in the previous approach:
+ * legendary builds a full Epic Online Services auth line for the launch (-AUTH_LOGIN,
+ * -AUTH_TYPE=exchangecode, -epicapp, -epicusername, -epicuserid, -epicsandboxid, ...),
+ * derived from the real logged-in session, that a bare "run the exe" invocation never
+ * supplied at all. Confirmed directly against this exact install (Rocket League, which
+ * requires Epic Online Services + Easy Anti-Cheat to hand off from its Launcher.exe
+ * bootstrap to the real game) via `legendary launch <appid> --dry-run`: titles with no
+ * EOS/anti-cheat dependency (Cuphead) happened to launch fine without that auth line,
+ * but Rocket League's EAC/EOS handoff silently failed without it - exactly the "click
+ * install/play should work exactly like it does natively" gap.
+ *
+ * legendary's `--wine <proton>` flag substitutes the given binary directly as the
+ * executable (`<bin> <exe> <args>`, with WINEPREFIX env) - not a valid Proton
+ * invocation, since Proton requires a verb (run/waitforexitandrun) as its first
+ * argument and reads STEAM_COMPAT_* vars, not WINEPREFIX. `--no-wine --wrapper "<proton
+ * path> run"` is the correct way to get Proton launched by legendary itself instead:
+ * verified via dry-run that this produces exactly `<proton> run <exe> <same real auth
+ * args>` - legendary treats the wrapper as a literal prefix to its own command line,
+ * so the full real launch parameters (with working directory, if the version
+ * eventually surfaces it) still come from legendary, not reconstructed by hand.
  */
 export function buildEpicLaunchCommand(
   det: HeroicDetection,
@@ -476,36 +495,29 @@ export function buildEpicLaunchCommand(
   wine: { bin: string; prefix: string; type: string } | null,
   steamInstallPath: string | null
 ): { bin: string; args: string[]; env: NodeJS.ProcessEnv } | null {
-  if (!game.installPath) return null
-  const installedPath = legendaryInstalledJsonPath(det)
-  const installedMap = installedPath
-    ? readJsonSafe<Record<string, LegendaryInstalledEntry>>(installedPath)
-    : null
-  const entry = installedMap?.[game.appId]
-  if (!entry?.executable) return null
-  const exe = resolveCaseInsensitive(game.installPath, entry.executable)
-  if (!exe || !existsSync(exe)) return null
+  if (!det.legendaryBin) return null
 
   if (game.platform === 'linux') {
-    return { bin: exe, args: [], env: det.env }
+    return { bin: det.legendaryBin, args: ['launch', game.appId], env: runnerEnv(det, 'legendary') }
   }
 
   if (!wine) return null
+  const legendaryEnv = runnerEnv(det, 'legendary')
   if (wine.type === 'proton') {
     return {
-      bin: wine.bin,
-      args: ['run', exe],
+      bin: det.legendaryBin,
+      args: ['launch', game.appId, '--no-wine', '--wrapper', `${wine.bin} run`],
       env: {
-        ...det.env,
+        ...legendaryEnv,
         STEAM_COMPAT_DATA_PATH: wine.prefix,
         ...(steamInstallPath ? { STEAM_COMPAT_CLIENT_INSTALL_PATH: steamInstallPath } : {})
       }
     }
   }
   return {
-    bin: wine.bin,
-    args: [exe],
-    env: { ...det.env, WINEPREFIX: wine.prefix }
+    bin: det.legendaryBin,
+    args: ['launch', game.appId, '--wine', wine.bin, '--wine-prefix', wine.prefix],
+    env: legendaryEnv
   }
 }
 
@@ -531,13 +543,15 @@ export async function readAmazonLibrary(det: HeroicDetection): Promise<UnifiedGa
 
 export function buildAmazonInstallCommand(
   det: HeroicDetection,
-  game: UnifiedGame,
-  installBaseDir: string
+  game: UnifiedGame
 ): { bin: string; args: string[]; env: NodeJS.ProcessEnv } | null {
   if (!det.nileBin) return null
+  // Installs into Heroic's own configured default library, not a separate app-owned
+  // directory - see heroicDefaultInstallPath's doc comment for why that split caused
+  // real Heroic to show these exact titles as "Game not available".
   return {
     bin: det.nileBin,
-    args: ['install', game.appId, '--base-path', join(installBaseDir, 'Amazon')],
+    args: ['install', game.appId, '--base-path', join(heroicDefaultInstallPath(det), 'Amazon')],
     env: runnerEnv(det, 'nile')
   }
 }

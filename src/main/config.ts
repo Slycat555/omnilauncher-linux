@@ -1,6 +1,4 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
-import { homedir } from 'os'
-import { join } from 'path'
 import type { AppSettings, SettingsPatch } from '../shared/types'
 import { appConfigDir, settingsFilePath } from './paths'
 
@@ -8,7 +6,6 @@ const DEFAULTS: AppSettings = {
   steamGridDbApiKey: '',
   steamWebApiKey: '',
   steamId64: '',
-  defaultInstallBasePath: join(homedir(), 'Games', 'OmniLauncherLinux'),
   enabledStores: { epic: false, amazon: false },
   uiScale: 1
 }
