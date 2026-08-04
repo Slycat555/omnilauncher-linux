@@ -56,15 +56,31 @@ export function GameGrid({
   useEffect(() => {
     const el = scrollContainer
     if (!el) return
-    const onScroll = (): void => setScrollTop(el.scrollTop)
+    // Raw scroll events can fire far more often than the display can actually paint -
+    // especially at a high refresh rate (240Hz gives ~4ms/frame vs 60Hz's ~16ms), where
+    // there's much less slack to absorb a React re-render triggered synchronously from
+    // every single event. Coalescing to one state update per rAF means the windowing
+    // math only ever runs once per real paintable frame, not once per raw scroll event -
+    // this is what "laggy, not running at 240Hz" during scroll actually was: not the
+    // display or Chromium capping anything, but this component doing more work per
+    // frame than a 240Hz frame budget allows if left unthrottled.
+    let raf = 0
+    const onScroll = (): void => {
+      if (raf) return
+      raf = requestAnimationFrame(() => {
+        raf = 0
+        setScrollTop(el.scrollTop)
+      })
+    }
     const onResize = (): void => setViewportHeight(el.clientHeight)
-    onScroll()
+    setScrollTop(el.scrollTop)
     onResize()
     el.addEventListener('scroll', onScroll, { passive: true })
     const ro = new ResizeObserver(onResize)
     ro.observe(el)
     return () => {
       el.removeEventListener('scroll', onScroll)
+      if (raf) cancelAnimationFrame(raf)
       ro.disconnect()
     }
   }, [scrollContainer])
