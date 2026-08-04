@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=OmniLauncher
+Comment=Unified game launcher for Steam and Heroic (GOG/Epic/Amazon)
+Exec=omnilauncher-linux %U
+Terminal=false
+Type=Application
+Icon=io.github.Slycat555.omnilauncher_linux
+Categories=Game;
+StartupWMClass=OmniLauncher

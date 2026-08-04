@@ -1,0 +1,84 @@
+app-id: io.github.Slycat555.omnilauncher_linux
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+base: org.electronjs.Electron2.BaseApp
+base-version: '25.08'
+command: omnilauncher-linux
+
+# OmniLauncher's whole purpose is driving the host's own Steam and Heroic
+# (legendary/gogdl/nile) installs - it has to see real install dirs (which the
+# user configures inside Heroic and can point anywhere, including external
+# drives), talk to Steam's already-running client over its own IPC, and shell
+# out to X11 tools (wmctrl/xdotool/xprop) to manage Steam's dialog windows. A
+# tightly scoped sandbox would break most of what the app does, so this grants
+# broad host access rather than trying to enumerate every path.
+finish-args:
+  - --share=ipc
+  - --share=network
+  - --socket=x11
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --socket=pulseaudio
+  - --device=dri
+  - --device=all
+  - --filesystem=home
+  - --filesystem=host
+  - --talk-name=org.freedesktop.Flatpak
+  - --system-talk-name=org.freedesktop.UDisks2
+  - --own-name=io.github.Slycat555.omnilauncher_linux
+  # Lets the app see other Flatpak apps' data dirs (Flatpak Steam/Heroic live
+  # under ~/.var/app/<id>), and lets it shell out to `flatpak run`/`flatpak list`
+  # to detect and launch them (see src/main/clients/flatpakUtil.ts).
+  - --filesystem=xdg-data/flatpak:ro
+  - --filesystem=~/.var/app:rw
+  - --env=FLATPAK_ID=io.github.Slycat555.omnilauncher_linux
+
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.node22
+
+build-options:
+  append-path: /usr/lib/sdk/node22/bin
+  env:
+    npm_config_cache: /run/build/omnilauncher-linux/flatpak-node/npm-cache
+    XDG_CACHE_HOME: /run/build/omnilauncher-linux/flatpak-node/cache
+    electron_config_cache: /run/build/omnilauncher-linux/flatpak-node/cache/electron
+    ELECTRON_SKIP_BINARY_DOWNLOAD: '0'
+    npm_config_build_from_source: 'false'
+    npm_config_nodedir: /usr/lib/sdk/node22
+
+modules:
+  - name: omnilauncher-linux
+    buildsystem: simple
+    build-options:
+      build-args:
+        - --share=network
+    build-commands:
+      - node --version
+      - npm ci --offline --cache flatpak-node/npm-cache
+      - npm run build
+      # node-gyp's intermediate build/ dirs (left over from compiling the native serialport
+      # binding), and flatpak-node/cache/node-gyp itself (a symlink planted straight into
+      # the SDK's own headers, put there by flatpak-node-generator's setup script so
+      # node-gyp could find them during npm ci) both point outside the sandbox - asar
+      # packaging refuses to follow a symlink like that. Neither is needed anymore once
+      # the native build is done, and electron-builder walks the whole project root, so
+      # both must be gone before packaging, not just excluded from node_modules.
+      - find node_modules -type d -name build -path '*bindings-cpp*' -exec rm -rf {} +
+      - rm -rf flatpak-node/cache/node-gyp
+      - npx electron-builder --linux dir --x64 -c.npmRebuild=false -c.electronDist=$PWD/flatpak-node/cache/electron/41a5d68646d956d50e13830e121ea0b3d6ab378b6a0ce422aefc1ff214707879 -c.electronVersion=39.8.10
+      - mkdir -p /app/omnilauncher-linux
+      - cp -r dist/linux-unpacked/* /app/omnilauncher-linux/
+      - install -Dm755 flatpak/omnilauncher-linux.sh /app/bin/omnilauncher-linux
+      - install -Dm644 flatpak/icon-512.png /app/share/icons/hicolor/512x512/apps/io.github.Slycat555.omnilauncher_linux.png
+      - install -Dm644 flatpak/io.github.Slycat555.omnilauncher_linux.desktop /app/share/applications/io.github.Slycat555.omnilauncher_linux.desktop
+      - install -Dm644 flatpak/io.github.Slycat555.omnilauncher_linux.metainfo.xml /app/share/metainfo/io.github.Slycat555.omnilauncher_linux.metainfo.xml
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - node_modules
+          - dist
+          - out
+          - .git
+      - generated-sources.json
