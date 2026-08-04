@@ -5,6 +5,7 @@ import { GameGrid } from './components/GameGrid'
 import { NfcLaunchOverlay } from './components/NfcLaunchOverlay'
 import { SettingsView } from './components/SettingsView'
 import { Sidebar } from './components/Sidebar'
+import { Titlebar } from './components/Titlebar'
 import { Toast } from './components/Toast'
 import { TopBar } from './components/TopBar'
 import type { StoreFilter } from './store'
@@ -249,40 +250,43 @@ function App(): React.JSX.Element {
   const focusedGame = filteredGames[focusedIndex]
 
   return (
-    <div className="app-shell">
-      <Sidebar
-        games={visibleGames}
-        settings={settings}
-        storeFilter={storeFilter}
-        onStoreFilter={setStoreFilter}
-        installedOnly={installedOnly}
-        onToggleInstalledOnly={toggleInstalledOnly}
-        view={view}
-        onView={setView}
-      />
-      <TopBar query={searchQuery} onQuery={setSearch} onRefresh={refresh} />
-      <div className="main" ref={gridRef}>
-        {view === 'settings' ? (
-          <SettingsView detection={detection} />
-        ) : loading ? (
-          <div className="empty-state">Scanning Steam &amp; Heroic…</div>
-        ) : (
-          <GameGrid
-            games={filteredGames}
-            focusedId={focusedGame?.id ?? null}
-            onHoverIndex={(i) => {
-              focusSourceRef.current = 'mouse'
-              setFocusedIndex(i)
-            }}
-            scrollContainer={gridRef.current}
-            rowHeight={rowHeight}
-          />
-        )}
+    <div className="app-root">
+      <Titlebar />
+      <div className="app-shell">
+        <Sidebar
+          games={visibleGames}
+          settings={settings}
+          storeFilter={storeFilter}
+          onStoreFilter={setStoreFilter}
+          installedOnly={installedOnly}
+          onToggleInstalledOnly={toggleInstalledOnly}
+          view={view}
+          onView={setView}
+        />
+        <TopBar query={searchQuery} onQuery={setSearch} onRefresh={refresh} />
+        <div className="main" ref={gridRef}>
+          {view === 'settings' ? (
+            <SettingsView detection={detection} />
+          ) : loading ? (
+            <div className="empty-state">Scanning Steam &amp; Heroic…</div>
+          ) : (
+            <GameGrid
+              games={filteredGames}
+              focusedId={focusedGame?.id ?? null}
+              onHoverIndex={(i) => {
+                focusSourceRef.current = 'mouse'
+                setFocusedIndex(i)
+              }}
+              scrollContainer={gridRef.current}
+              rowHeight={rowHeight}
+            />
+          )}
+        </div>
+        <Toast />
+        <CoverPicker />
+        <GameDetailsPanel />
+        <NfcLaunchOverlay />
       </div>
-      <Toast />
-      <CoverPicker />
-      <GameDetailsPanel />
-      <NfcLaunchOverlay />
     </div>
   )
 }

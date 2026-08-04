@@ -60,6 +60,15 @@ button {
   cursor: pointer;
 }
 
+/* Frameless window (see main/index.ts's frame: false) - .titlebar replaces the OS's own
+   title bar/window buttons entirely, so the whole app now stacks titlebar-then-shell
+   instead of the shell alone filling the window. */
+.app-root {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .app-shell {
   display: grid;
   grid-template-columns: 220px 1fr;
@@ -67,7 +76,50 @@ button {
   grid-template-areas:
     'sidebar topbar'
     'sidebar main';
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ---------- custom titlebar (replaces the native window frame) ---------- */
+.titlebar {
+  flex-shrink: 0;
+  height: 28px;
+  display: flex;
+  align-items: stretch;
+  background: var(--bg-1);
+  border-bottom: 1px solid var(--border);
+  /* The whole bar is draggable by default; only the buttons (.titlebar-buttons)
+     opt back out via no-drag below, same convention Steam's own client uses. */
+  -webkit-app-region: drag;
+}
+.titlebar-drag {
+  flex: 1;
+  min-width: 0;
+}
+.titlebar-buttons {
+  display: flex;
+  -webkit-app-region: no-drag;
+}
+.titlebar-btn {
+  width: 38px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-1);
+}
+.titlebar-btn:hover {
+  background: var(--bg-3);
+  color: var(--text-0);
+}
+/* Deliberately its own deep, saturated red rather than the shared --bad variable
+   (used elsewhere for error states, muted/pastel by design there) - this needs to read
+   unambiguously as "close" the way every other OS's own close button does. */
+.titlebar-btn-close:hover {
+  background: #c11e1e;
+  color: white;
 }
 
 /* ---------- top bar ---------- */

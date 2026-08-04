@@ -12,6 +12,15 @@ import type {
 } from '../shared/types'
 
 const api = {
+  minimizeWindow: (): Promise<void> => ipcRenderer.invoke('window:minimize'),
+  toggleMaximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:toggleMaximize'),
+  isWindowMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:isMaximized'),
+  closeWindow: (): Promise<void> => ipcRenderer.invoke('window:close'),
+  onWindowMaximizedChanged: (cb: (maximized: boolean) => void): (() => void) => {
+    const listener = (_e: unknown, maximized: boolean): void => cb(maximized)
+    ipcRenderer.on('window:maximized', listener)
+    return () => ipcRenderer.removeListener('window:maximized', listener)
+  },
   detectAll: (): Promise<DetectionResult> => ipcRenderer.invoke('detect:all'),
   getLibrary: (): Promise<UnifiedGame[]> => ipcRenderer.invoke('library:get'),
   refreshLibrary: (): Promise<UnifiedGame[]> => ipcRenderer.invoke('library:refresh'),
