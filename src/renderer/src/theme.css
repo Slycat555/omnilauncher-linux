@@ -362,14 +362,28 @@ button {
   color: var(--text-1);
   background: linear-gradient(160deg, var(--bg-3), var(--bg-1));
 }
+/* Indeterminate install spinner - not tied to any reported percent/byte count, which
+   Steam's own on-disk state doesn't always report reliably or promptly (confirmed
+   separately: StateFlags/BytesDownloaded can lag or misrepresent progress mid-update).
+   Same spin animation as the refresh button's icon, just a dedicated ring rather than
+   an icon, centered over the art instead of a bottom progress bar. */
 .art-progress-fill {
   position: absolute;
-  left: 0;
-  bottom: 0;
-  height: 4px;
-  background: var(--action-install);
-  transition: width 0.25s ease;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
   z-index: 1;
+}
+.art-progress-fill::after {
+  content: '';
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 31, 61, 0.25);
+  border-top-color: var(--action-stop);
+  animation: spin 0.8s linear infinite;
 }
 .select-check {
   position: absolute;

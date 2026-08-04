@@ -26,9 +26,6 @@ backends (`gogdl`, `legendary`, `nile`).
   Confirmation dialogs Steam requires (install/uninstall) are handled and backgrounded
   automatically once they're no longer needed.
 
-- **Real progress, always** — install progress is read live from each backend, including Steam's
-  own on-disk state, so the UI never lies about what's actually happening.
-
 - **In-app store login** — log in to GOG, Epic, and Amazon without leaving the app; the
   authorization code is captured automatically, no copy-pasting required. Steam login stays in
   the Steam client itself, where it actually lives.

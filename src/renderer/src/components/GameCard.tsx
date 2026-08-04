@@ -3,17 +3,6 @@ import type { UnifiedGame } from '../../../shared/types'
 import { useAppStore } from '../store'
 import { CheckIcon, DownloadIcon, PlayIcon, StopIcon } from './Icons'
 
-function formatBytes(bytes: number): string {
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
-  let value = bytes
-  let unit = 0
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024
-    unit++
-  }
-  return `${value.toFixed(value >= 100 || unit === 0 ? 0 : 1)} ${units[unit]}`
-}
-
 interface Props {
   game: UnifiedGame
   focused?: boolean
@@ -23,7 +12,6 @@ interface Props {
 export function GameCard({ game, focused, onMouseEnter }: Props): React.JSX.Element {
   const cover = useAppStore((s) => s.covers[game.id])
   const loadCover = useAppStore((s) => s.loadCover)
-  const progress = useAppStore((s) => s.progress[game.id])
   const install = useAppStore((s) => s.install)
   const cancelInstall = useAppStore((s) => s.cancelInstall)
   const launch = useAppStore((s) => s.launch)
@@ -70,7 +58,7 @@ export function GameCard({ game, focused, onMouseEnter }: Props): React.JSX.Elem
             </div>
           )
         ) : game.isInstalling ? (
-          <div className="art-progress-fill" style={{ width: `${progress?.percent ?? 0}%` }} />
+          <div className="art-progress-fill" />
         ) : null}
 
         {coverUrl ? (
@@ -85,12 +73,8 @@ export function GameCard({ game, focused, onMouseEnter }: Props): React.JSX.Elem
       <div className="card-footer">
         <div className="card-footer-main">
           <div className="card-title">{game.title}</div>
-          {game.isInstalling && progress ? (
-            <div className="card-subtext">
-              {progress.percent !== undefined ? `${progress.percent.toFixed(0)}%` : 'Starting…'}
-              {progress.bytesTotal !== undefined &&
-                ` · ${formatBytes(progress.bytesDone ?? 0)} / ${formatBytes(progress.bytesTotal)}`}
-            </div>
+          {game.isInstalling ? (
+            <div className="card-subtext">Installing…</div>
           ) : (
             <div className="card-subtext">{game.isInstalled ? 'Installed' : 'Not installed'}</div>
           )}
