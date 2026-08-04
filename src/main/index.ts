@@ -35,6 +35,12 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 600,
     show: false,
+    // frame: false hands the whole window chrome (title bar, minimize/maximize/close
+    // buttons) to the renderer instead of the OS/window manager drawing it - a custom
+    // titlebar (App.tsx) replaces it, same as Steam's own client does. autoHideMenuBar
+    // is now moot (there's no native frame left for it to hide a menu bar from) but
+    // harmless to leave.
+    frame: false,
     autoHideMenuBar: true,
     backgroundColor: '#14161c',
     ...(process.platform === 'linux' ? { icon } : {}),
@@ -47,6 +53,12 @@ function createWindow(): void {
   mainWindow.on('ready-to-show', () => {
     mainWindow?.show()
   })
+
+  // The renderer's custom titlebar buttons can't call BrowserWindow methods directly -
+  // it has no Node/Electron access (sandboxed renderer) - so these mirror what the
+  // native frame's own buttons would have done, reached via IPC (see ipc.ts).
+  mainWindow.on('maximize', () => mainWindow?.webContents.send('window:maximized', true))
+  mainWindow.on('unmaximize', () => mainWindow?.webContents.send('window:maximized', false))
 
   // The X/close button backgrounds the app to the tray instead of quitting it - a
   // running install or game shouldn't be torn down just because the window closed, the
@@ -84,6 +96,29 @@ export function showMainWindow(): void {
   if (mainWindow.isMinimized()) mainWindow.restore()
   mainWindow.show()
   mainWindow.focus()
+}
+
+// The custom titlebar's own minimize/maximize/close buttons (App.tsx) - a frameless
+// window has no native equivalent buttons doing this anymore, so the renderer calls
+// these over IPC instead.
+export function minimizeMainWindow(): void {
+  mainWindow?.minimize()
+}
+
+export function toggleMaximizeMainWindow(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMaximized()) mainWindow.unmaximize()
+  else mainWindow.maximize()
+}
+
+export function isMainWindowMaximized(): boolean {
+  return mainWindow?.isMaximized() ?? false
+}
+
+export function closeMainWindow(): void {
+  // Same as the native frame's own X button before frame:false - this backgrounds to
+  // tray via the window's existing 'close' handler below, it does not quit the app.
+  mainWindow?.close()
 }
 
 function createTray(): void {

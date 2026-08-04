@@ -19,7 +19,13 @@ import {
 } from './clients/storeAuth'
 import { loadSettings, saveSettings } from './config'
 import { localCoverUrl } from './coverProtocol'
-import { showMainWindow } from './index'
+import {
+  closeMainWindow,
+  isMainWindowMaximized,
+  minimizeMainWindow,
+  showMainWindow,
+  toggleMaximizeMainWindow
+} from './index'
 import { installManager, type RuntimeContext as InstallCtx } from './installManager'
 import { launchGame, type RuntimeContext as LaunchCtx } from './launchManager'
 import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } from './library'
@@ -63,6 +69,15 @@ function safeHandle<Args extends unknown[], R>(
 
 export function registerIpcHandlers(): void {
   indexGames(getCachedLibrary())
+
+  // Custom titlebar (App.tsx) button handlers - the renderer has no direct access to
+  // BrowserWindow (sandboxed, no Node integration), so these are its only way to do
+  // what the native frame's own minimize/maximize/close buttons used to do before
+  // frame: false.
+  safeHandle('window:minimize', async () => minimizeMainWindow())
+  safeHandle('window:toggleMaximize', async () => toggleMaximizeMainWindow())
+  safeHandle('window:isMaximized', async () => isMainWindowMaximized())
+  safeHandle('window:close', async () => closeMainWindow())
 
   safeHandle('detect:all', async () => detectAll())
 

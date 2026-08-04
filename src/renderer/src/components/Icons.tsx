@@ -125,3 +125,22 @@ export const NfcIcon = ({ size }: IconProps): React.JSX.Element =>
     size
   )
 
+// Custom titlebar window-control glyphs (App.tsx) - the window is frameless, so these
+// stand in for whatever the OS's own minimize/maximize/close buttons would have drawn.
+export const MinimizeIcon = ({ size }: IconProps): React.JSX.Element =>
+  base(<line x1="5" y1="12" x2="19" y2="12" />, size)
+
+export const MaximizeIcon = ({ size }: IconProps): React.JSX.Element =>
+  base(<rect x="5" y="5" width="14" height="14" rx="1" />, size)
+
+/** Shown instead of MaximizeIcon once the window is already maximized - clicking
+ *  restores it back down, same convention as every other OS's own window controls. */
+export const RestoreIcon = ({ size }: IconProps): React.JSX.Element =>
+  base(
+    <>
+      <rect x="7.5" y="4.5" width="12" height="12" rx="1" />
+      <path d="M4.5 7.5v11a1 1 0 0 0 1 1h11" />
+    </>,
+    size
+  )
+
