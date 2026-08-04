@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useAppStore } from '../store'
-import { RefreshIcon, SearchIcon, TrashIcon, UsersIcon, XIcon } from './Icons'
+import { RefreshIcon, SearchIcon, TrashIcon, XIcon } from './Icons'
 
 interface Props {
   query: string
@@ -47,7 +47,7 @@ export function TopBar({ query, onQuery, onRefresh }: Props): React.JSX.Element 
           </div>
           <div style={{ flex: 1 }} />
           <button className="icon-btn" title="Select multiple games to uninstall" onClick={toggleManageMode}>
-            <UsersIcon size={15} />
+            <TrashIcon size={15} />
           </button>
           <button
             className={`icon-btn${refreshing ? ' spinning' : ''}`}

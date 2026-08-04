@@ -17,9 +17,10 @@ function formatBytes(bytes: number): string {
 interface Props {
   game: UnifiedGame
   focused?: boolean
+  onMouseEnter?: () => void
 }
 
-export function GameCard({ game, focused }: Props): React.JSX.Element {
+export function GameCard({ game, focused, onMouseEnter }: Props): React.JSX.Element {
   const cover = useAppStore((s) => s.covers[game.id])
   const loadCover = useAppStore((s) => s.loadCover)
   const progress = useAppStore((s) => s.progress[game.id])
@@ -29,7 +30,7 @@ export function GameCard({ game, focused }: Props): React.JSX.Element {
   const manageMode = useAppStore((s) => s.manageMode)
   const selected = useAppStore((s) => !!s.selectedForManage[game.id])
   const toggleGameSelected = useAppStore((s) => s.toggleGameSelected)
-  const openCoverPicker = useAppStore((s) => s.openCoverPicker)
+  const openDetails = useAppStore((s) => s.openDetails)
 
   useEffect(() => {
     void loadCover(game.id)
@@ -46,20 +47,22 @@ export function GameCard({ game, focused }: Props): React.JSX.Element {
     if (manageMode && game.isInstalled) toggleGameSelected(game.id)
   }
 
-  function onContextMenu(e: React.MouseEvent): void {
-    e.preventDefault()
-    if (manageMode) return
-    void openCoverPicker(game.id)
-  }
-
   return (
     <div
       className={`game-card${focused ? ' focused' : ''}${manageMode ? ' manageable' : ''}${selected ? ' selected' : ''}`}
       data-game-id={game.id}
       onClick={onCardClick}
-      onContextMenu={onContextMenu}
+      onMouseEnter={onMouseEnter}
     >
-      <div className="card-art">
+      <div
+        className="card-art"
+        onContextMenu={(e) => {
+          if (manageMode) return
+          e.preventDefault()
+          e.stopPropagation()
+          openDetails(game.id)
+        }}
+      >
         {manageMode ? (
           game.isInstalled && (
             <div className={`select-check${selected ? ' checked' : ''}`}>

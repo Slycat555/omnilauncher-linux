@@ -18,7 +18,9 @@ const api = {
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
   saveSettings: (patch: SettingsPatch): Promise<AppSettings> =>
     ipcRenderer.invoke('settings:save', patch),
-  getCoverArt: (gameId: string): Promise<{ cover: string | null; hero: string | null }> =>
+  getCoverArt: (
+    gameId: string
+  ): Promise<{ cover: string | null; hero: string | null; resolved: boolean }> =>
     ipcRenderer.invoke('covers:get', gameId),
   searchCoverOptions: (gameId: string): Promise<CoverOption[]> =>
     ipcRenderer.invoke('covers:search', gameId),
@@ -38,6 +40,18 @@ const api = {
   logoutGog: (): Promise<void> => ipcRenderer.invoke('auth:logoutGog'),
   logoutEpic: (): Promise<void> => ipcRenderer.invoke('auth:logoutEpic'),
   logoutAmazon: (): Promise<void> => ipcRenderer.invoke('auth:logoutAmazon'),
+  isNfcAvailable: (): Promise<boolean> => ipcRenderer.invoke('nfc:available'),
+  writeGameToTag: (gameId: string): Promise<void> => ipcRenderer.invoke('nfc:writeGame', gameId),
+  onNfcTagScanned: (cb: (gameId: string) => void): (() => void) => {
+    const listener = (_e: unknown, gameId: string): void => cb(gameId)
+    ipcRenderer.on('nfc:tagScanned', listener)
+    return () => ipcRenderer.removeListener('nfc:tagScanned', listener)
+  },
+  onNfcAvailabilityChanged: (cb: (available: boolean) => void): (() => void) => {
+    const listener = (_e: unknown, available: boolean): void => cb(available)
+    ipcRenderer.on('nfc:availabilityChanged', listener)
+    return () => ipcRenderer.removeListener('nfc:availabilityChanged', listener)
+  },
   onInstallProgress: (cb: (evt: InstallProgressEvent) => void): (() => void) => {
     const listener = (_e: unknown, evt: InstallProgressEvent): void => cb(evt)
     ipcRenderer.on('install:progress', listener)

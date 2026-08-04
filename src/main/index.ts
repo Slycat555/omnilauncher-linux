@@ -5,6 +5,7 @@ import icon from '../../resources/omni.png?asset'
 import trayIcon from '../../resources/tray-icon.png?asset'
 import { registerCoverProtocolHandler, registerCoverProtocolPrivilege } from './coverProtocol'
 import { registerIpcHandlers } from './ipc'
+import { installLinuxDesktopEntry } from './linuxDesktopIntegration'
 
 registerCoverProtocolPrivilege()
 
@@ -13,6 +14,18 @@ let tray: Tray | null = null
 // Set by the tray's own "Quit" item just before calling app.quit() - the only way the
 // close handler below should ever let the window actually close instead of hiding it.
 let isQuitting = false
+
+// The window's own close handler hides it to the tray instead of quitting, so a running
+// instance is often sitting there hidden with no window - without a single-instance
+// lock, clicking the taskbar/desktop launcher again just starts a brand new process
+// instead of surfacing that one. The second launch loses the race, quits immediately,
+// and its 'second-instance' event on the first process is what re-shows the real window.
+const gotLock = app.requestSingleInstanceLock()
+if (!gotLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => showMainWindow())
+}
 
 function createWindow(): void {
   // Create the browser window.
@@ -59,6 +72,20 @@ function createWindow(): void {
   }
 }
 
+/** Brings the main window to the front, restoring/unhiding it from the tray if needed.
+ *  Exported so the NFC scan handler can call this too - the app normally sits hidden to
+ *  tray, and without this a tag scan would launch the game and show our own
+ *  "Launching…" overlay behind everything, with Steam's own dialog then appearing on
+ *  top of whatever window happened to be focused - visually identical to "the Steam
+ *  popup covers the launcher" even though the real gap was our window never coming
+ *  forward in the first place. */
+export function showMainWindow(): void {
+  if (!mainWindow) return
+  if (mainWindow.isMinimized()) mainWindow.restore()
+  mainWindow.show()
+  mainWindow.focus()
+}
+
 function createTray(): void {
   // The full-res app icon (omni.png) is 1024px and renders oversized/blurry when handed
   // straight to the tray - Electron doesn't intelligently downscale it the way a window
@@ -67,16 +94,9 @@ function createTray(): void {
   tray = new Tray(nativeImage.createFromPath(trayIcon))
   tray.setToolTip('OmniLauncher')
 
-  const showWindow = (): void => {
-    if (!mainWindow) return
-    if (mainWindow.isMinimized()) mainWindow.restore()
-    mainWindow.show()
-    mainWindow.focus()
-  }
-
   tray.setContextMenu(
     Menu.buildFromTemplate([
-      { label: 'Open OmniLauncher', click: showWindow },
+      { label: 'Open OmniLauncher', click: showMainWindow },
       { type: 'separator' },
       {
         label: 'Quit',
@@ -88,7 +108,7 @@ function createTray(): void {
     ])
   )
 
-  tray.on('click', showWindow)
+  tray.on('click', showMainWindow)
 }
 
 // This method will be called when Electron has finished
@@ -96,7 +116,9 @@ function createTray(): void {
 // Some APIs can only be used after this event occurs.
 app.whenReady().then(() => {
   // Set app user model id for windows
-  electronApp.setAppUserModelId('com.electron')
+  electronApp.setAppUserModelId('com.omnilauncher.linux')
+
+  installLinuxDesktopEntry()
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.

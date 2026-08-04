@@ -228,6 +228,10 @@ export interface CoverArtResult {
   /** Changes whenever the files on disk change (re-picked art, a refreshed auto-fetch) -
    *  callers use this to bust the browser's cache for the fixed cover.<ext> filename. */
   version: number
+  /** False when this call didn't actually complete a fresh fetch (network error, rate
+   *  limit) and is just handing back whatever was cached before, if anything - the
+   *  renderer must not treat this as a final "no art" result and cache it forever. */
+  resolved: boolean
 }
 
 /**
@@ -253,13 +257,19 @@ export async function getCoverArt(
   // covers folder) may no longer exist on disk - never trust a path without checking.
   const coverOnDisk = cached?.coverPath && existsSync(cached.coverPath) ? cached.coverPath : null
   const heroOnDisk = cached?.heroPath && existsSync(cached.heroPath) ? cached.heroPath : null
-  const cachedResult = { cover: coverOnDisk, hero: heroOnDisk, version: cached?.fetchedAt ?? 0 }
+  const cachedResult = {
+    cover: coverOnDisk,
+    hero: heroOnDisk,
+    version: cached?.fetchedAt ?? 0,
+    resolved: true
+  }
 
   if (cached?.pinned && coverOnDisk) return cachedResult
   if (cached && (coverOnDisk || heroOnDisk) && Date.now() - cached.fetchedAt < STALE_MS) {
     return cachedResult
   }
-  // No SteamGridDB key and nothing to fall back to download either - nothing to do.
+  // No SteamGridDB key and nothing to fall back to download either - a real, final
+  // answer ("there's genuinely nothing to fetch"), not a failure - resolved: true.
   if (!apiKey && !fallback.cover && !fallback.hero) return cachedResult
 
   const existing = inFlight.get(gameId)
@@ -272,9 +282,16 @@ export async function getCoverArt(
       const version = Date.now()
       index[gameId] = { coverPath: result.cover ?? undefined, heroPath: result.hero ?? undefined, fetchedAt: version }
       persistIndex()
-      return { ...result, version }
+      return { ...result, version, resolved: true }
     } catch {
-      return cachedResult
+      // A failed fetch (network error, rate limit, etc) must NOT be cached by the
+      // renderer as if it were a real "no art" result - loadCover() treats any cached
+      // entry (even {cover: null, hero: null}) as "already tried, don't retry ever
+      // again for this session", so silently returning cachedResult here (previously
+      // {cover: null, hero: null} whenever nothing had been cached yet) permanently
+      // stuck the thumbnail blank. resolved: false lets the IPC layer tell the
+      // renderer this attempt didn't actually complete, so it's safe to retry later.
+      return { ...cachedResult, resolved: false }
     } finally {
       releaseSlot()
       inFlight.delete(gameId)
