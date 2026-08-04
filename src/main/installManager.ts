@@ -18,7 +18,6 @@ import { installSteamGame, uninstallSteamGame } from './clients/steam'
 export interface RuntimeContext {
   steam: SteamDetection
   heroic: HeroicDetection
-  installBaseDir: string
 }
 
 type ProgressCb = (evt: InstallProgressEvent) => void
@@ -192,7 +191,7 @@ class InstallManager {
     }
 
     if (game.store === 'gog') {
-      const builder = buildGogInstallCommand(ctx.heroic, game, ctx.installBaseDir)
+      const builder = buildGogInstallCommand(ctx.heroic, game)
       if (!builder) {
         onProgress({ gameId: game.id, phase: 'error', message: 'Backend CLI not found for this store.' })
         throw new Error('Backend CLI not found')
@@ -216,8 +215,8 @@ class InstallManager {
 
     const builder =
       game.store === 'epic'
-        ? buildEpicInstallCommand(ctx.heroic, game, ctx.installBaseDir)
-        : buildAmazonInstallCommand(ctx.heroic, game, ctx.installBaseDir)
+        ? buildEpicInstallCommand(ctx.heroic, game)
+        : buildAmazonInstallCommand(ctx.heroic, game)
 
     if (!builder) {
       onProgress({ gameId: game.id, phase: 'error', message: 'Backend CLI not found for this store.' })

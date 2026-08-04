@@ -263,20 +263,6 @@ export function SettingsView({ detection }: { detection: DetectionResult | null 
         </div>
       </div>
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        <div className="section-label">Installs</div>
-        <div className="field">
-          <label>Default install location</label>
-          <input
-            value={current.defaultInstallBasePath}
-            onChange={(e) => update({ defaultInstallBasePath: e.target.value })}
-          />
-          <span className="hint">
-            New installs are placed under here in per-store subfolders (GOG/, Epic/, Amazon/).
-          </span>
-        </div>
-      </div>
-
       <div>
         <button
           className="btn btn-primary"

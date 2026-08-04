@@ -77,7 +77,6 @@ export interface AppSettings {
   steamGridDbApiKey: string
   steamWebApiKey: string
   steamId64: string
-  defaultInstallBasePath: string
   /** Steam & GOG are always shown; Epic/Amazon are opt-in to keep the library focused. */
   enabledStores: {
     epic: boolean
