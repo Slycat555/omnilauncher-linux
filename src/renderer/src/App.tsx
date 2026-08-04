@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CoverPicker } from './components/CoverPicker'
+import { GameDetailsPanel } from './components/GameDetailsPanel'
 import { GameGrid } from './components/GameGrid'
+import { NfcLaunchOverlay } from './components/NfcLaunchOverlay'
 import { SettingsView } from './components/SettingsView'
 import { Sidebar } from './components/Sidebar'
 import { Toast } from './components/Toast'
@@ -92,15 +94,15 @@ function App(): React.JSX.Element {
     // of the container (a sliver of the next row stays visible, or padding is left
     // uncovered) - snap all the way when focus is on the first or last row instead.
     if (focusedIndex < cols) {
-      container.scrollTo({ top: 0 })
+      container.scrollTo({ top: 0, behavior: 'smooth' })
       return
     }
     if (focusedIndex >= filteredGames.length - cols) {
-      container.scrollTo({ top: container.scrollHeight })
+      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
       return
     }
     const el = container.querySelector(`[data-game-id="${CSS.escape(game.id)}"]`)
-    el?.scrollIntoView({ block: 'nearest' })
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedIndex, filteredGames])
 
@@ -205,11 +207,17 @@ function App(): React.JSX.Element {
         ) : loading ? (
           <div className="empty-state">Scanning Steam &amp; Heroic…</div>
         ) : (
-          <GameGrid games={filteredGames} focusedId={focusedGame?.id ?? null} />
+          <GameGrid
+            games={filteredGames}
+            focusedId={focusedGame?.id ?? null}
+            onHoverIndex={setFocusedIndex}
+          />
         )}
       </div>
       <Toast />
       <CoverPicker />
+      <GameDetailsPanel />
+      <NfcLaunchOverlay />
     </div>
   )
 }

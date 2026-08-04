@@ -114,13 +114,14 @@ export const ImageIcon = ({ size }: IconProps): React.JSX.Element =>
     size
   )
 
-export const UsersIcon = ({ size }: IconProps): React.JSX.Element =>
+export const NfcIcon = ({ size }: IconProps): React.JSX.Element =>
   base(
     <>
-      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-      <circle cx="9" cy="7" r="4" />
-      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+      <rect x="3" y="7" width="7" height="10" rx="1.5" />
+      <path d="M13 8a5 5 0 0 1 0 8" />
+      <path d="M16.5 5.5a9.5 9.5 0 0 1 0 13" />
+      <path d="M20 3a13.5 13.5 0 0 1 0 18" />
     </>,
     size
   )
+

@@ -1,14 +1,14 @@
 :root {
-  --bg-0: #121212;
-  --bg-1: #1a1a1a;
-  --bg-2: #232323;
-  --bg-3: #2e2e2e;
-  --border: #333333;
+  --bg-0: #0d0d0d;
+  --bg-1: #141414;
+  --bg-2: #1c1c1c;
+  --bg-3: #262626;
+  --border: #2b2b2b;
   --text-0: #f0f0f0;
   --text-1: #b8b8b8;
   --text-2: #838383;
-  --accent: #5b8cff;
-  --accent-dim: #39406b;
+  --accent: #2f5fdb;
+  --accent-dim: #1f2e5c;
   /* Vivid, fully-saturated action colours for the card buttons. */
   --action-install: #1573ff;
   --action-play: #00c853;
@@ -137,6 +137,7 @@ button {
   flex-direction: column;
   gap: 26px;
   overflow-y: auto;
+  scroll-behavior: smooth;
 }
 .nav-group {
   display: flex;
@@ -201,6 +202,7 @@ button {
 .main {
   grid-area: main;
   overflow-y: auto;
+  scroll-behavior: smooth;
   padding: 20px 24px 40px;
   position: relative;
 }
@@ -249,15 +251,21 @@ button {
   flex-direction: column;
   transition: transform 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
 }
-.game-card:hover {
-  transform: translateY(-3px);
-  border-color: var(--accent);
-}
+/* Hovering with the mouse moves keyboard/gamepad focus onto the same card (see
+   GameGrid's onMouseEnter), so .focused is the single indicator for "selected by any
+   input method" - a separate lighter :hover-only effect would leave two different
+   selection outlines out of sync with each other, which read as the highlight being
+   "stuck" whenever the mouse moved without dragging the thick outline along with it.
+   Uses box-shadow, not outline: outline-offset draws a gap between the card's own 1px
+   border and the outline itself, so the two never actually meet - the accent color
+   showed through as a solid ring but with a sliver of the base grey border still
+   visible right at the card edge underneath it. A single box-shadow ring sits flush
+   against the card with nothing between it and the edge, so it reads as one seamless
+   border instead of two concentric rings with a gap. */
 .game-card.focused {
   transform: translateY(-3px);
   border-color: var(--accent);
-  outline: 3px solid var(--accent);
-  outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--accent);
 }
 .game-card.manageable {
   cursor: pointer;
@@ -397,6 +405,85 @@ button {
   filter: brightness(1.1);
 }
 
+/* ---- per-game Artwork/NFC settings panel ---- */
+.details-panel-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 40;
+}
+.details-panel {
+  width: min(420px, 92vw);
+  background: var(--bg-1);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.details-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--border);
+}
+.details-panel-title {
+  font-size: 15px;
+  font-weight: 700;
+}
+.details-panel-subtitle {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 2px;
+}
+.details-panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 18px;
+}
+/* Artwork and NFC sections share this exact layout - a fixed-size preview tile on the
+   left, heading/hint/button stacked on the right - so the two are visually symmetrical
+   instead of the Artwork row and NFC row having different shapes. */
+.details-section-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+}
+.details-section-main {
+  flex: 1;
+  min-width: 0;
+}
+.details-section-header {
+  font-size: 13px;
+  font-weight: 700;
+  margin-bottom: 6px;
+}
+.details-section-hint {
+  font-size: 12px;
+  color: var(--text-2);
+  margin: 0 0 10px;
+}
+.details-preview-tile {
+  width: 56px;
+  height: 56px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: var(--bg-2);
+  flex-shrink: 0;
+}
+.details-preview-tile-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border);
+  color: var(--text-2);
+}
+
 /* ---- SteamGridDB cover picker ---- */
 .cover-picker-overlay {
   position: fixed;
@@ -439,6 +526,7 @@ button {
   gap: 10px;
   padding: 16px 18px;
   overflow-y: auto;
+  scroll-behavior: smooth;
 }
 .cover-picker-option {
   /* Deliberately not using `aspect-ratio` here: in this Chromium build, CSS Grid's
@@ -485,6 +573,15 @@ button {
   color: white;
 }
 .btn-primary:hover {
+  filter: brightness(1.08);
+}
+/* Same blue as the card's own Install button, not the lighter --accent .btn-primary
+   uses elsewhere - used for the GameDetailsPanel's Artwork/NFC action buttons. */
+.btn-install-blue {
+  background: var(--action-install);
+  color: white;
+}
+.btn-install-blue:hover:not(:disabled) {
   filter: brightness(1.08);
 }
 .btn:disabled {
@@ -588,4 +685,66 @@ button {
 .field .hint {
   color: var(--text-2);
   font-size: 11px;
+}
+
+/* ---- full-screen "Launching…" overlay for NFC-triggered launches ---- */
+@keyframes nfc-launch-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes nfc-launch-pop-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+.nfc-launch-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.78);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+  animation: nfc-launch-fade-in 0.2s ease;
+}
+.nfc-launch-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 18px;
+  animation: nfc-launch-pop-in 0.3s cubic-bezier(0.2, 0.9, 0.3, 1.2);
+}
+.nfc-launch-art {
+  width: 260px;
+  height: 390px;
+  object-fit: cover;
+  border-radius: 14px;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.nfc-launch-art-empty {
+  background: linear-gradient(160deg, var(--bg-3), var(--bg-1));
+}
+.nfc-launch-label {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+.nfc-launch-title {
+  font-size: 26px;
+  font-weight: 800;
+  color: var(--text-0);
+  text-align: center;
+  max-width: 480px;
 }

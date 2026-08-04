@@ -19,9 +19,11 @@ import {
 } from './clients/storeAuth'
 import { loadSettings, saveSettings } from './config'
 import { localCoverUrl } from './coverProtocol'
+import { showMainWindow } from './index'
 import { installManager, type RuntimeContext as InstallCtx } from './installManager'
 import { launchGame, type RuntimeContext as LaunchCtx } from './launchManager'
 import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } from './library'
+import { isNfcAvailable, startNfcWatcher, writeGameToTag } from './nfcManager'
 import { chooseCover, getCoverArt, searchCoverOptions } from './steamgriddb'
 
 let gameIndex = new Map<string, UnifiedGame>()
@@ -75,7 +77,11 @@ export function registerIpcHandlers(): void {
   safeHandle('covers:get', async (_e, gameId: string) => {
     const settings = loadSettings()
     const game = gameIndex.get(gameId)
-    if (!game) return { cover: null, hero: null }
+    // gameIndex can still be empty/stale right after startup (a real race, not
+    // hypothetical - the same class of bug found in the NFC path) - resolved: false
+    // tells the renderer this wasn't a genuine "no art" answer, so it's safe to retry
+    // once the index is actually populated instead of caching a permanent blank.
+    if (!game) return { cover: null, hero: null, resolved: false }
     const result = await getCoverArt(
       settings.steamGridDbApiKey,
       game.id,
@@ -86,7 +92,8 @@ export function registerIpcHandlers(): void {
     )
     return {
       cover: result.cover ? localCoverUrl(result.cover, result.version) : null,
-      hero: result.hero ? localCoverUrl(result.hero, result.version) : null
+      hero: result.hero ? localCoverUrl(result.hero, result.version) : null,
+      resolved: result.resolved
     }
   })
 
@@ -194,4 +201,29 @@ export function registerIpcHandlers(): void {
     const { heroic } = await getRuntimeDetections()
     await logoutAmazon(heroic)
   })
+
+  safeHandle('nfc:available', async () => isNfcAvailable())
+
+  safeHandle('nfc:writeGame', async (_e, gameId: string) => {
+    if (!gameIndex.has(gameId)) throw new Error('Unknown game')
+    await writeGameToTag(gameId)
+  })
+
+  // Started once, here, rather than per-renderer-window: the watcher owns a single
+  // long-lived serial connection for the app's whole lifetime, same as the tray icon.
+  startNfcWatcher(
+    (gameId) => {
+      if (!gameIndex.has(gameId)) return
+      // The app normally sits hidden to the tray - without this, a scan would launch
+      // the game and broadcast the tag-scanned event to a window nobody's looking at,
+      // so our own "Launching…" overlay (and Steam's transient dialog on top of it)
+      // would render behind everything instead of in front, indistinguishable from
+      // Steam's popup "covering" the launcher.
+      showMainWindow()
+      broadcast('nfc:tagScanned', gameId)
+      // A tag that doesn't match any known game (wiped, foreign, or from a game removed
+      // from the library since) is silently ignored - there's nothing useful to launch.
+    },
+    (available) => broadcast('nfc:availabilityChanged', available)
+  )
 }

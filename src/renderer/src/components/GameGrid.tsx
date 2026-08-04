@@ -4,9 +4,10 @@ import { GameCard } from './GameCard'
 interface Props {
   games: UnifiedGame[]
   focusedId: string | null
+  onHoverIndex?: (index: number) => void
 }
 
-export function GameGrid({ games, focusedId }: Props): React.JSX.Element {
+export function GameGrid({ games, focusedId, onHoverIndex }: Props): React.JSX.Element {
   if (games.length === 0) {
     return (
       <div className="empty-state">
@@ -20,8 +21,13 @@ export function GameGrid({ games, focusedId }: Props): React.JSX.Element {
 
   return (
     <div className="game-grid">
-      {games.map((g) => (
-        <GameCard key={g.id} game={g} focused={g.id === focusedId} />
+      {games.map((g, i) => (
+        <GameCard
+          key={g.id}
+          game={g}
+          focused={g.id === focusedId}
+          onMouseEnter={onHoverIndex ? () => onHoverIndex(i) : undefined}
+        />
       ))}
     </div>
   )

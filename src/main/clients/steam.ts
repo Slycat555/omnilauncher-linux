@@ -270,10 +270,21 @@ function isSteamRunning(): boolean {
 /** Steam launches every game (native or Proton) under its "reaper" process, tagged
  *  with the appid on the command line - so this is the one reliable signal that a
  *  Steam-launched game is still actually running, since Steam itself is a detached
- *  process we have no other handle on. */
+ *  process we have no other handle on.
+ *
+ *  Matching the exact literal "reaper SteamLaunch AppId=<id> " (with a required
+ *  trailing space) was too brittle: distro-specific Steam wrappers (confirmed present
+ *  here - Bazzite wraps the client in its own launcher script) and different Steam
+ *  client versions/beta channels can order or space these tokens differently, or wrap
+ *  reaper in extra args. A false negative here doesn't just mis-report launch state -
+ *  it's what the app uses to decide whether to keep backgrounding the Steam window and
+ *  whether to disable gamepad navigation while a game is on screen, so an unreliable
+ *  match here directly caused both "sometimes it doesn't work" symptoms. Matching just
+ *  "AppId=<id>" as its own word is far more tolerant of surrounding format differences
+ *  while still being specific to this exact game's own reaper invocation. */
 export function isSteamGameRunning(appId: string): boolean {
   try {
-    execSync(`pgrep -f "reaper SteamLaunch AppId=${appId} "`, { stdio: 'ignore' })
+    execSync(`pgrep -f "\\bAppId=${appId}\\b"`, { stdio: 'ignore' })
     return true
   } catch {
     return false
@@ -315,10 +326,26 @@ export function readSteamInstallState(steamRoot: string, appId: string): SteamIn
   return null
 }
 
-/** Closes every window whose `wmctrl -l -x` line matches `pred` - shared by
- *  closeSteamWindow() and closeVulkanShaderWindow(), which only differ in what they
- *  match on (WM_CLASS vs window title), not in how closing actually happens. */
-function closeMatchingWindows(pred: (line: string) => boolean): void {
+/** Minimizes every window whose `wmctrl -l -x` line matches `pred`, instead of closing
+ *  it - shared by closeSteamWindow() and closeVulkanShaderWindow(), which only differ
+ *  in what they match on (WM_CLASS vs window title), not in how hiding actually
+ *  happens.
+ *
+ *  Switched from actually closing (wmctrl -ic) to minimizing for two reasons: closing
+ *  can only ever react to a window that has already rendered and become visible -
+ *  there's an unavoidable flash between the dialog appearing and our poll catching it,
+ *  no matter how tight the interval. Minimizing has the exact same "can't act before it
+ *  exists" limitation, but leaves the window and its underlying process/state fully
+ *  intact rather than destroying it, which matters more for the shader-cache dialog
+ *  specifically (closing a window Steam still expects to be managing partway through
+ *  shader compilation is a real, if narrow, risk that minimizing it entirely avoids).
+ *
+ *  Uses `xdotool windowminimize`, not `wmctrl -b add,hidden` - confirmed directly by
+ *  spawning a real test window that the EWMH client-message approach (`wmctrl -r <id>
+ *  -b add,hidden`) is silently a no-op on this compositor (window stayed fully visible,
+ *  _NET_WM_STATE never gained _HIDDEN), while xdotool's minimize actually works
+ *  (confirmed via WM_STATE reading "Iconic" afterward). */
+function hideMatchingWindows(pred: (line: string) => boolean): void {
   try {
     execSync('wmctrl -l -x', { stdio: ['ignore', 'pipe', 'ignore'] })
       .toString()
@@ -328,40 +355,145 @@ function closeMatchingWindows(pred: (line: string) => boolean): void {
         const id = line.trim().split(/\s+/)[0]
         if (id) {
           try {
-            execSync(`wmctrl -ic ${id}`, { stdio: 'ignore' })
+            execSync(`xdotool windowminimize ${id}`, { stdio: 'ignore' })
           } catch {
             // window may have already closed on its own
           }
         }
       })
   } catch {
-    // wmctrl not available or nothing to close - not fatal, the window just stays up
+    // wmctrl not available or nothing to hide - not fatal, the window just stays up
   }
 }
 
-/** Closes the Steam client's own window(s) - used once an install/uninstall we
+/** Minimizes the Steam client's own window(s) - used once an install/uninstall we
  *  dispatched has visibly started, so the confirmation dialog the user had to click
- *  through doesn't linger on screen for the whole download. Closing the window does not
- *  stop the download: the actual download is driven by the `steam` client process
- *  itself, not the steamwebhelper-owned window, the same way closing Steam "to tray"
+ *  through doesn't linger on screen for the whole download. Minimizing the window does
+ *  not stop the download: the actual download is driven by the `steam` client process
+ *  itself, not the steamwebhelper-owned window, the same way minimizing Steam "to tray"
  *  during a normal download never interrupts it. */
 export function closeSteamWindow(): void {
-  closeMatchingWindows((line) => line.includes('steamwebhelper.steam'))
+  hideMatchingWindows((line) => line.includes('steamwebhelper.steam'))
 }
 
 /**
- * Closes Steam's "Vulkan Shader Cache - Processing shaders" dialog that appears before
- * a game's own window when a Proton title needs to pre-compile shaders (can take
+ * Minimizes Steam's "Vulkan Shader Cache - Processing shaders" dialog that appears
+ * before a game's own window when a Proton title needs to pre-compile shaders (can take
  * anywhere from seconds to several minutes on a first run or after a driver update).
  * This dialog reuses the game's own WM_CLASS (steam_app_<appid>), not Steam's - so
- * unlike closeSteamWindow() it cannot be matched by class alone without risking closing
+ * unlike closeSteamWindow() it cannot be matched by class alone without risking hiding
  * the actual game window once shaders are done and it takes over. Steam hardcodes the
  * literal string "Vulkan Shader Cache" in this dialog's title across versions/distros,
  * so matching on that is the safe, specific signal - a real game's own window title is
  * never going to contain it.
  */
 export function closeVulkanShaderWindow(): void {
-  closeMatchingWindows((line) => line.includes('Vulkan Shader Cache'))
+  hideMatchingWindows((line) => line.includes('Vulkan Shader Cache'))
+}
+
+/**
+ * Event-driven alternative to polling closeSteamWindow()/closeVulkanShaderWindow() on
+ * an interval. Polling can only ever react after a dialog has already rendered and
+ * become visible for however long the interval takes to notice it - tightening the
+ * interval reduces but can't eliminate that flash. This instead runs a single
+ * long-lived `xprop -root -spy _NET_CLIENT_LIST` process that the X server itself
+ * pushes an updated line to the instant any top-level window is mapped or unmapped
+ * (verified: `xprop -root _NET_CLIENT_LIST` returns the live list immediately, and
+ * -spy is the documented "watch this property forever" mode) - so a new window is seen
+ * and can be acted on within milliseconds of actually existing, not up to a poll
+ * interval later. X11/XWayland only, same as wmctrl - silently does nothing under
+ * native Wayland (checked once at startup, not per call).
+ *
+ * Only started once for the whole app lifetime (spawning a new `xprop -spy` per launch
+ * would itself add startup latency defeating the purpose) and gated by
+ * `suppressionArmed` so it only actually hides windows during an active Steam launch,
+ * not any time the user has Steam's own window open for a legitimate reason.
+ */
+let watcherStarted = false
+let suppressionArmed = false
+let knownWindowIds = new Set<string>()
+
+/** xprop's _NET_CLIENT_LIST reports window ids as bare hex ("0x3a00024"), but wmctrl -l
+ *  zero-pads them to a fixed 8 hex digits ("0x03a00024") - confirmed directly by
+ *  spawning a real window and reading both. Grepping the raw xprop id against wmctrl's
+ *  output silently never matched anything because of this, even for a genuinely present
+ *  window - this normalizes both to the same numeric value before comparing instead of
+ *  string-matching a format that isn't actually consistent between the two tools. */
+function normalizeWindowId(id: string): string {
+  return BigInt(id).toString(16)
+}
+
+function windowMatchesSuppressTarget(id: string): boolean {
+  try {
+    const target = normalizeWindowId(id)
+    const lines = execSync('wmctrl -l -x', { stdio: ['ignore', 'pipe', 'ignore'] })
+      .toString()
+      .split('\n')
+    const line = lines.find((l) => {
+      const wid = l.trim().split(/\s+/)[0]
+      return wid && normalizeWindowId(wid) === target
+    })
+    if (!line) return false
+    return line.includes('steamwebhelper.steam') || line.includes('Vulkan Shader Cache')
+  } catch {
+    return false
+  }
+}
+
+export function armSteamWindowSuppression(): void {
+  suppressionArmed = true
+  if (watcherStarted) return
+  watcherStarted = true
+
+  try {
+    const watcher = spawn('xprop', ['-root', '-spy', '_NET_CLIENT_LIST'], {
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    watcher.unref()
+    let buf = ''
+    watcher.stdout?.on('data', (chunk: Buffer) => {
+      buf += chunk.toString()
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        // xprop writes "window id #" once, followed by a single comma-separated list
+        // of hex ids - not once per id. Matching the "window id #" prefix per-id (as an
+        // earlier version of this did) only ever caught the first id in the list and
+        // silently missed every window after it, which would have made this whole
+        // watcher functionally blind to anything but the very first window it ever saw.
+        // Confirmed directly by spawning a real X11 window (xmessage) while watching.
+        const afterHash = line.split('window id #')[1]
+        const ids = new Set(
+          afterHash
+            ? afterHash
+                .split(',')
+                .map((s) => s.trim())
+                .filter((s) => /^0x[0-9a-fA-F]+$/.test(s))
+            : []
+        )
+        const newIds = [...ids].filter((id) => !knownWindowIds.has(id))
+        knownWindowIds = ids
+        if (!suppressionArmed) continue
+        for (const id of newIds) {
+          if (windowMatchesSuppressTarget(id)) {
+            try {
+              execSync(`xdotool windowminimize ${id}`, { stdio: 'ignore' })
+            } catch {
+              // gone already - fine
+            }
+          }
+        }
+      }
+    })
+  } catch {
+    // xprop not available (e.g. native Wayland with no XWayland) - the polling-based
+    // closeSteamWindow()/closeVulkanShaderWindow() calls elsewhere in the launch flow
+    // remain as the fallback, just without this tighter reaction time.
+  }
+}
+
+export function disarmSteamWindowSuppression(): void {
+  suppressionArmed = false
 }
 
 function spawnDetached(cmd: string, args: string[]): void {
@@ -484,19 +616,25 @@ export async function uninstallSteamGame(det: SteamDetection, appId: string): Pr
   // keeps the main library window backgrounded) is safe here without needing the
   // no-silent workaround.
   //
-  // Unlike install, this deliberately does NOT auto-close the confirmation window: the
-  // manifest for an app being uninstalled already exists from BEFORE the user clicks
-  // anything (it's the currently-installed game's own manifest), so its mere presence
-  // can't distinguish "waiting for a click" from "click already happened" the way a
-  // fresh install's manifest appearing from nothing can. Closing on a guessed delay was
-  // the same premature-close bug install had; there's no safe on-disk signal to poll
-  // for here instead, so the window is left for the user to dismiss themselves and this
-  // only polls for the real completion signal (the manifest disappearing).
+  // Unlike install, the manifest for an app being uninstalled already exists from
+  // BEFORE the user clicks anything (it's the currently-installed game's own manifest),
+  // so its mere presence can't distinguish "waiting for a click" from "click already
+  // happened" the way a fresh install's manifest appearing from nothing can. But Steam
+  // does set a distinct StateFlags bit (0x02, "Uninstalling") on that same manifest the
+  // instant the confirm click actually happens, well before the files are removed or
+  // the manifest disappears - that bit is the real "confirmed" signal that was missing,
+  // not a guessed delay, so it's safe to close the window on exactly like install does.
   steamUri(det.execCommand, `steam://uninstall/${appId}`)
 
+  let windowClosed = false
   const deadline = Date.now() + 5 * 60 * 1000
   while (Date.now() < deadline) {
-    if (!readSteamInstallState(det.root, appId)) return
+    const state = readSteamInstallState(det.root, appId)
+    if (!state) return
+    if (!windowClosed && (state.stateFlags & 0x02) !== 0) {
+      closeSteamWindow()
+      windowClosed = true
+    }
     await sleep(1000)
   }
   throw new Error('Uninstall timed out - check the Steam client.')

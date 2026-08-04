@@ -41,11 +41,26 @@ interface AppState {
   coverPickerOptions: CoverOption[]
   coverPickerLoading: boolean
 
+  /** Which game's Artwork/NFC details panel is open, if any - null when closed. Only
+   *  one at a time, same as the cover picker. */
+  detailsGameId: string | null
+  openDetails: (gameId: string) => void
+  closeDetails: () => void
+
   /** Live login state for GOG/Epic/Amazon - null until the first check completes. Used
    *  to hide a store's owned-but-not-installed catalog once logged out (installed games
    *  stay visible regardless, since those are real files on disk either way). */
   authStatus: StoreAuthStatus | null
   refreshAuthStatus: () => Promise<void>
+
+  /** Whether a PN532 reader was detected at startup - gates whether "Write to NFC tag"
+   *  shows up in the card menu at all. */
+  nfcAvailable: boolean
+  writeGameToTag: (gameId: string) => Promise<void>
+
+  /** Set briefly when a tag scan launches a game, driving a full-screen "Launching…"
+   *  overlay (cover art + title) - null when nothing's showing. */
+  nfcLaunchGameId: string | null
 
   init: () => Promise<void>
   refresh: () => Promise<void>
@@ -60,7 +75,11 @@ interface AppState {
   /** install / play / cancel depending on the game's current state - used by keyboard & gamepad confirm */
   primaryAction: (gameId: string) => void
   saveSettings: (patch: Partial<AppSettings>) => Promise<void>
-  loadCover: (gameId: string) => Promise<void>
+  loadCover: (gameId: string, priority?: boolean) => Promise<void>
+  /** Loads covers for every game in the library in the background, not just whichever
+   *  store/filter is currently visible - so switching filters never shows a fresh
+   *  batch of blank-then-pop-in cards. */
+  precacheAllCovers: () => Promise<void>
 
   toggleManageMode: () => void
   toggleGameSelected: (gameId: string) => void
@@ -99,11 +118,23 @@ const store = createStore<AppState>((set, get) => ({
   coverPickerOptions: [],
   coverPickerLoading: false,
 
+  detailsGameId: null,
+  openDetails: (gameId) => set({ detailsGameId: gameId }),
+  closeDetails: () => set({ detailsGameId: null }),
+
   authStatus: null,
   refreshAuthStatus: async () => {
     const authStatus = await window.api.getAuthStatus()
     set({ authStatus })
   },
+
+  nfcAvailable: false,
+  // No toast here on purpose - the write flow only ever happens from
+  // GameDetailsPanel, which shows its own inline "Tag written"/error state instead of a
+  // popup. Errors are rethrown so that panel can catch and display them itself.
+  writeGameToTag: (gameId) => window.api.writeGameToTag(gameId),
+
+  nfcLaunchGameId: null,
 
   init: async () => {
     set({ loading: true })
@@ -113,8 +144,47 @@ const store = createStore<AppState>((set, get) => ({
         window.api.detectAll(),
         window.api.getSettings()
       ])
-      set({ games: cached, detection, settings, loading: false })
+      set({ games: cached, detection, settings })
+      // Wait for the first screenful's worth of covers before ever showing the grid -
+      // without this, every card rendered its plain placeholder first and then popped
+      // in the real art the instant its fetch resolved, all across the grid, visibly at
+      // slightly different times. Sorted the same way GameGrid sorts (alphabetically by
+      // title) so "first N" actually matches what's likely on screen first, not an
+      // arbitrary N games that happen to be first in the unsorted list. Bounded (not the
+      // whole library) so a large library doesn't turn this into a long loading screen -
+      // INITIAL_COVER_BATCH is generously sized for any realistic grid viewport.
+      const firstBatch = [...cached].sort((a, b) => a.title.localeCompare(b.title))
+      await Promise.all(
+        firstBatch.slice(0, INITIAL_COVER_BATCH).map((g) => get().loadCover(g.id, true))
+      )
+      set({ loading: false })
+      // Everything beyond the first batch, and every game in the batch that's about to
+      // be filtered out by a non-"all" store filter, still needs to be precached in the
+      // background so switching filters later has nothing left to fetch either.
+      void get().precacheAllCovers()
       void get().refreshAuthStatus()
+      void window.api.isNfcAvailable().then((nfcAvailable) => set({ nfcAvailable }))
+      window.api.onNfcTagScanned((gameId) => {
+        const game = get().games.find((g) => g.id === gameId)
+        if (!game) return
+        // Only show the launch overlay when the scan actually results in launching the
+        // game - not on the install/cancel-install paths primaryAction() can also take
+        // depending on the game's current state, since only a real launch is what the
+        // user asked to be notified about.
+        if (game.isInstalled && game.canLaunch) {
+          void get().loadCover(gameId)
+          set({ nfcLaunchGameId: gameId })
+          setTimeout(() => {
+            if (get().nfcLaunchGameId === gameId) set({ nfcLaunchGameId: null })
+          }, 3000)
+        }
+        get().primaryAction(gameId)
+      })
+      // The reader isn't always plugged in yet the instant the app starts (or gets
+      // replugged mid-session) - the main process keeps retrying detection in the
+      // background and pushes this once it actually connects, so the "Write to NFC tag"
+      // option can appear without needing an app restart.
+      window.api.onNfcAvailabilityChanged((nfcAvailable) => set({ nfcAvailable }))
 
       window.api.onInstallProgress((evt) => {
         set((state) => {
@@ -168,10 +238,18 @@ const store = createStore<AppState>((set, get) => ({
     try {
       const games = await window.api.refreshLibrary()
       set({ games })
+      void get().precacheAllCovers()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       set({ error: message, toast: `Failed to refresh library: ${message}` })
     }
+  },
+
+  precacheAllCovers: async () => {
+    // Not priority - this must never jump ahead of a card or the details panel actively
+    // on screen right now, it just needs to eventually cover the whole library so a
+    // later filter switch has nothing left to fetch.
+    await Promise.all(get().games.map((g) => get().loadCover(g.id)))
   },
 
   setSearch: (q) => set({ searchQuery: q }),
@@ -242,10 +320,19 @@ const store = createStore<AppState>((set, get) => ({
     set({ settings })
   },
 
-  loadCover: async (gameId) => {
+  loadCover: async (gameId, priority = false) => {
     if (get().covers[gameId]) return
     try {
-      const result = await runThrottled(() => window.api.getCoverArt(gameId))
+      const { resolved, ...result } = await runThrottled(
+        () => window.api.getCoverArt(gameId),
+        priority
+      )
+      // resolved: false means this attempt didn't actually complete (main process's
+      // game index wasn't populated yet, a fetch failed) - it is NOT a real "no art"
+      // answer, and must not be cached, or the thumbnail would stay blank for the rest
+      // of the session with no way to retry. Only a genuine result (found art, or
+      // confirmed nothing to fetch) gets cached.
+      if (!resolved) return
       set((state) => ({ covers: { ...state.covers, [gameId]: result } }))
     } catch (err) {
       console.error('loadCover failed for', gameId, err)
@@ -314,13 +401,24 @@ const store = createStore<AppState>((set, get) => ({
   }
 }))
 
+// How many covers init() waits for before showing the grid at all - generous for any
+// realistic first screenful so nothing visible pops in, without turning a large
+// library into a long loading screen waiting on covers nobody's looking at yet.
+const INITIAL_COVER_BATCH = 20
+
 // A whole grid's worth of cards mounting at once would otherwise fire dozens of
 // simultaneous ipcRenderer.invoke('covers:get') calls in the same tick.
 const COVER_LOAD_CONCURRENCY = 4
 let activeCoverLoads = 0
 const coverLoadQueue: Array<() => void> = []
 
-function runThrottled<T>(fn: () => Promise<T>): Promise<T> {
+/** priority: true jumps the queue instead of joining the back of it - used when opening
+ *  GameDetailsPanel for a game whose cover hasn't loaded yet, so the one thing the user
+ *  is actively looking at doesn't sit behind however many grid-card fetches happened to
+ *  already be queued (a real, visible delay on any library with more than a screenful
+ *  of games - the plain FIFO queue had no way to distinguish "background prefetch" from
+ *  "the user is staring at a blank spot right now"). */
+function runThrottled<T>(fn: () => Promise<T>, priority = false): Promise<T> {
   return new Promise((resolve, reject) => {
     const run = (): void => {
       activeCoverLoads++
@@ -333,6 +431,7 @@ function runThrottled<T>(fn: () => Promise<T>): Promise<T> {
         })
     }
     if (activeCoverLoads < COVER_LOAD_CONCURRENCY) run()
+    else if (priority) coverLoadQueue.unshift(run)
     else coverLoadQueue.push(run)
   })
 }

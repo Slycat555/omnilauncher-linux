@@ -16,6 +16,10 @@ backends (`gogdl`, `legendary`, `nile`).
 
 - **One library, every store** — Steam, GOG, Epic, and Amazon games in a single grid, filterable
   by store or installed status.
+- **NFC tag launching** — write a game to a physical NFC tag with a PN532 USB reader, then tap it
+  to launch that game instantly. Handy for a couch/arcade-cabinet setup where digging through a
+  menu isn't the point. Tested with a PN532 USB reader
+  ([Amazon](https://www.amazon.com/dp/B0DKTK9VS9), [eBay](https://www.ebay.com/itm/198168802345)).
 - **Install, launch, and uninstall from one place** — no store client window getting in the way.
   Confirmation dialogs Steam requires (install/uninstall) are handled and backgrounded
   automatically once they're no longer needed.

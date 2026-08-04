@@ -38,3 +38,7 @@ export function libraryCacheFilePath(): string {
 export function playtimeFilePath(): string {
   return join(appConfigDir(), 'playtime.json')
 }
+
+export function nfcTagsFilePath(): string {
+  return join(appConfigDir(), 'nfc-tags.json')
+}

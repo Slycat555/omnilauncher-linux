@@ -7,7 +7,14 @@ import {
   buildGogLaunchCommand,
   resolveWineForGame
 } from './clients/heroic'
-import { closeSteamWindow, closeVulkanShaderWindow, isSteamGameRunning, launchSteamGame } from './clients/steam'
+import {
+  armSteamWindowSuppression,
+  closeSteamWindow,
+  closeVulkanShaderWindow,
+  disarmSteamWindowSuppression,
+  isSteamGameRunning,
+  launchSteamGame
+} from './clients/steam'
 import { addPlaySession } from './playtime'
 
 export interface RuntimeContext {
@@ -27,6 +34,10 @@ export function launchGame(game: UnifiedGame, ctx: RuntimeContext, onState: Stat
   if (runningIds.has(game.id)) return
 
   if (game.store === 'steam') {
+    // Armed BEFORE dispatch, not after - the "Launching..." dialog can appear within
+    // milliseconds of the URI being handed to Steam, so suppression needs to already be
+    // watching, not scrambling to start up in reaction to it.
+    armSteamWindowSuppression()
     launchSteamGame(ctx.steam, game.appId)
     // Steam manages its own process lifecycle & playtime bookkeeping, and detaches the
     // actual game from us entirely - so instead of guessing with a fixed timeout, poll
@@ -35,7 +46,17 @@ export function launchGame(game: UnifiedGame, ctx: RuntimeContext, onState: Stat
     runningIds.add(game.id)
     onState({ gameId: game.id, running: true })
     const startedAt = Date.now()
-    const poll = setInterval(() => {
+    const tick = (): boolean => {
+      // -silent keeps Steam's main library window from opening on its own, but it does
+      // nothing about the transient "Launching..." dialog that appears immediately
+      // after dispatch, well before the reaper process (isSteamGameRunning's signal)
+      // exists - that dialog was previously only closed AFTER the game was confirmed
+      // running, leaving a several-second gap where it sat on top of everything,
+      // including our own NFC launch overlay. Closing it unconditionally on every tick,
+      // same as the shader-cache dialog below, covers that whole window instead of just
+      // the part after the game's actually up.
+      closeSteamWindow()
+
       // A Proton title's first run (or any run after a driver update) can sit on
       // Steam's own "Vulkan Shader Cache" dialog for anywhere from seconds to several
       // minutes before the game's own window ever appears - close it on sight, the same
@@ -43,24 +64,23 @@ export function launchGame(game: UnifiedGame, ctx: RuntimeContext, onState: Stat
       // purpose. Checked every tick since there's no single moment to catch it at.
       closeVulkanShaderWindow()
 
-      const running = isSteamGameRunning(game.appId)
-      if (running) {
-        // -silent keeps the main library window from opening on its own when we
-        // dispatch the launch, but it does nothing if Steam was already visible before
-        // the user hit Play (left open by them, or by an install/shader dialog) - once
-        // the game is confirmed actually running, background it the same way an
-        // install's window gets closed once a download is confirmed underway.
-        closeSteamWindow()
-        return
-      }
+      return isSteamGameRunning(game.appId)
+    }
+    // Run once immediately (not just on the first interval tick) so the "Launching..."
+    // dialog gets a close attempt right away instead of waiting out a full interval -
+    // it can render within a couple hundred ms of dispatch.
+    tick()
+    const poll = setInterval(() => {
+      if (tick()) return
       // Steam can take a few seconds to actually spawn the reaper process after the URI
       // is dispatched - a not-found reading in that window is expected, not proof the
       // game exited, so keep polling instead of declaring "not running" too early.
       if (Date.now() - startedAt < 8000) return
       clearInterval(poll)
+      disarmSteamWindowSuppression()
       runningIds.delete(game.id)
       onState({ gameId: game.id, running: false })
-    }, 2000)
+    }, 500)
     return
   }
 
