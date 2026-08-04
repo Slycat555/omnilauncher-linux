@@ -76,7 +76,7 @@ export function GameDetailsPanel(): React.JSX.Element | null {
                   void openCoverPicker(gameId)
                 }}
               >
-                Choose cover art…
+                Choose cover art
               </button>
             </div>
           </div>

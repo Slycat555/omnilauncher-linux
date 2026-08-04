@@ -292,9 +292,15 @@ export function isSteamGameRunning(appId: string): boolean {
 }
 
 export interface SteamInstallState {
-  /** Bit 4 = fully installed. Bit 8/16/64 etc cover downloading/staging/committing -
-   *  not decoded individually since bytesDownloaded/bytesToDownload already give a
-   *  cleaner percentage, this is only used to tell "idle" apart from "doing something". */
+  /** Bit 4 ("FullyInstalled") is NOT a reliable "download is done right now" signal on
+   *  its own - confirmed directly with a synthetic manifest matching what Steam writes
+   *  mid-update: StateFlags can be 6 (bit 4 FullyInstalled | bit 2 UpdateRequired) while
+   *  actively downloading an update to an already-installed game, meaning the old
+   *  `(stateFlags & 4) !== 0` check reported the game as finished the instant the
+   *  manifest existed, before any bytes had actually downloaded - which is what made
+   *  progress look undetected (it jumped straight to "installed" or never updated at
+   *  all). fullyInstalled below is now bit 4 AND no bytes still pending, not bit 4
+   *  alone. */
   stateFlags: number
   fullyInstalled: boolean
   bytesDownloaded: number
@@ -313,11 +319,18 @@ export function readSteamInstallState(steamRoot: string, appId: string): SteamIn
       const state = parsed['AppState']
       if (!isVdfObject(state)) continue
       const stateFlags = num(state['StateFlags'])
+      const bytesDownloaded = num(state['BytesDownloaded'])
+      const bytesToDownload = num(state['BytesToDownload'])
+      // A real, in-progress download always has bytesToDownload > 0 with bytes still
+      // remaining - trust that directly over trying to fully decode Valve's
+      // under-documented StateFlags bitfield, which bit 4 alone was proven insufficient
+      // for above.
+      const stillDownloading = bytesToDownload > 0 && bytesDownloaded < bytesToDownload
       return {
         stateFlags,
-        fullyInstalled: (stateFlags & 4) !== 0,
-        bytesDownloaded: num(state['BytesDownloaded']),
-        bytesToDownload: num(state['BytesToDownload'])
+        fullyInstalled: (stateFlags & 4) !== 0 && !stillDownloading,
+        bytesDownloaded,
+        bytesToDownload
       }
     } catch {
       continue
