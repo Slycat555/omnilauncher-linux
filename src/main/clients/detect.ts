@@ -10,7 +10,7 @@ import { flatpakAppInstalled, flatpakShowLocation } from './flatpakUtil'
 const execFileP = promisify(execFile)
 
 const HEROIC_FLATPAK_ID = 'com.heroicgameslauncher.hgl'
-const STEAM_FLATPAK_ID = 'com.valvesoftware.Steam'
+export const STEAM_FLATPAK_ID = 'com.valvesoftware.Steam'
 
 async function which(bin: string): Promise<string | null> {
   try {

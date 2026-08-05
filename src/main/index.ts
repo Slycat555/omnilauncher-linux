@@ -4,8 +4,27 @@ import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/omni.png?asset'
 import trayIcon from '../../resources/tray-icon.png?asset'
 import { registerCoverProtocolHandler, registerCoverProtocolPrivilege } from './coverProtocol'
+import { maybeReexecForNfcGroupAccess } from './clients/nfcAutoReexec'
 import { registerIpcHandlers } from './ipc'
 import { installLinuxDesktopEntry } from './linuxDesktopIntegration'
+
+// Absolute first thing, before any Electron API is touched: if a group-membership NFC
+// fix was already applied but this process predates it, hand off to a freshly
+// group-refreshed process instead of ever fully starting this one - see
+// nfcAutoReexec.ts for why this is needed even after a full logout/login sometimes
+// still doesn't pick up a new group on some systems.
+//
+// Production builds only (`app.isPackaged` - checked directly, since is.dev/is.prod
+// from @electron-toolkit/utils aren't imported yet at this point and this needs to run
+// before anything else does). `electron-vite dev` runs Electron as a child process it
+// manages together with the Vite dev server the renderer loads from; re-exec'ing
+// Electron standalone here orphans it from that - confirmed directly (the relaunched
+// window failed with ERR_CONNECTION_REFUSED against the dev server). A packaged
+// AppImage has no such dependency (the renderer loads from local files), so this is
+// safe there and is exactly where users actually hit the group-membership gap anyway.
+if (app.isPackaged && maybeReexecForNfcGroupAccess()) {
+  process.exit(0)
+}
 
 registerCoverProtocolPrivilege()
 

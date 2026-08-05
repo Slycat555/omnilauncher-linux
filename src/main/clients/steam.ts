@@ -4,7 +4,7 @@ import { homedir } from 'os'
 import { join } from 'path'
 import type { UnifiedGame } from '../../shared/types'
 import { isVdfObject, parseVdf, type VdfNode } from '../vdf'
-import type { SteamDetection } from './detect'
+import { STEAM_FLATPAK_ID, type SteamDetection } from './detect'
 
 function str(v: VdfNode | string | undefined, fallback = ''): string {
   return typeof v === 'string' ? v : fallback
@@ -254,10 +254,22 @@ export async function readSteamLibrary(
 }
 
 /** ~/.steam/steam.pid is only ever a hint - Steam does not clean it up on exit, so a
- *  liveness check on the PID it names is required, not just the file's existence. */
-function isSteamRunning(): boolean {
+ *  liveness check on the PID it names is required, not just the file's existence.
+ *
+ *  This always checked the *native* path even for a flatpak install, whose sandboxed
+ *  $HOME redirects that same relative file under ~/.var/app/<id>/ instead (confirmed
+ *  against how this app's own detectSteam() already computes the flatpak install's
+ *  .local/share/Steam path the same way) - so isSteamRunning() unconditionally reported
+ *  "not running" for flatpak Steam even while it very much was, which meant every single
+ *  launch/install/uninstall action always took the cold-start branch below: it would
+ *  spawn a redundant second Steam invocation and then sit through an unnecessary extra
+ *  ~4s delay before forwarding the real action, every single time, whether or not Steam
+ *  needed starting at all. */
+function isSteamRunning(variant: SteamDetection['variant']): boolean {
   try {
-    const pidFile = join(homedir(), '.steam', 'steam.pid')
+    const steamHome =
+      variant === 'flatpak' ? join(homedir(), '.var', 'app', STEAM_FLATPAK_ID) : homedir()
+    const pidFile = join(steamHome, '.steam', 'steam.pid')
     const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10)
     if (!Number.isFinite(pid)) return false
     process.kill(pid, 0)
@@ -384,9 +396,15 @@ function hideMatchingWindows(pred: (line: string) => boolean): void {
  *  through doesn't linger on screen for the whole download. Minimizing the window does
  *  not stop the download: the actual download is driven by the `steam` client process
  *  itself, not the steamwebhelper-owned window, the same way minimizing Steam "to tray"
- *  during a normal download never interrupts it. */
+ *  during a normal download never interrupts it.
+ *
+ *  Matches on the substring "steamwebhelper" alone, not the previously-hardcoded
+ *  "steamwebhelper.steam" - the flatpak build's window reports a differently-cased/
+ *  suffixed WM_CLASS (its desktop/app id is "com.valvesoftware.Steam", not "steam"),
+ *  which made this predicate match nothing at all and left every dialog sitting on
+ *  screen for flatpak Steam even though the native package's window matched fine. */
 export function closeSteamWindow(): void {
-  hideMatchingWindows((line) => line.includes('steamwebhelper.steam'))
+  hideMatchingWindows((line) => line.includes('steamwebhelper'))
 }
 
 /**
@@ -447,7 +465,7 @@ function windowMatchesSuppressTarget(id: string): boolean {
       return wid && normalizeWindowId(wid) === target
     })
     if (!line) return false
-    return line.includes('steamwebhelper.steam') || line.includes('Vulkan Shader Cache')
+    return line.includes('steamwebhelper') || line.includes('Vulkan Shader Cache')
   } catch {
     return false
   }
@@ -514,16 +532,34 @@ function spawnDetached(cmd: string, args: string[]): void {
   child.unref()
 }
 
-function steamUri(execCommand: string[], uri: string): void {
-  const [cmd, ...args] = execCommand
+/**
+ * Builds the actual argv to spawn for execCommand (either ['steam'] or ['flatpak',
+ * 'run', <id>]) plus whatever Steam-specific flags/URI are being sent. flatpak's own
+ * `run` stops parsing its own options once it reaches the app id, but the recommended,
+ * unambiguous way to guarantee everything after that is passed straight through to the
+ * sandboxed app rather than risk `flatpak run` itself trying to interpret a
+ * dash-prefixed argument (like "-silent") as one of its own options is an explicit `--`
+ * separator - see flatpak-run(1). Native `steam` has no such wrapper/parser in front of
+ * it and needs nothing extra.
+ */
+function steamArgv(execCommand: string[], steamArgs: string[]): { cmd: string; args: string[] } {
+  const [cmd, ...prefix] = execCommand
+  const separator = cmd === 'flatpak' ? ['--'] : []
+  return { cmd, args: [...prefix, ...separator, ...steamArgs] }
+}
 
-  if (!isSteamRunning()) {
+function steamUri(execCommand: string[], variant: SteamDetection['variant'], uri: string): void {
+  if (!isSteamRunning(variant)) {
     // Cold start: bring Steam up minimized to the tray (no main window ever appears)
     // before handing it the action, instead of letting Steam's own default startup
     // flash its full GUI open first. A URI sent to a not-yet-initialized client can
     // also race its startup, so give it a moment before forwarding the actual command.
-    spawnDetached(cmd, [...args, '-silent'])
-    setTimeout(() => spawnDetached(cmd, [...args, uri, '-silent']), 4000)
+    const cold = steamArgv(execCommand, ['-silent'])
+    spawnDetached(cold.cmd, cold.args)
+    setTimeout(() => {
+      const warm = steamArgv(execCommand, [uri, '-silent'])
+      spawnDetached(warm.cmd, warm.args)
+    }, 4000)
     return
   }
 
@@ -538,7 +574,8 @@ function steamUri(execCommand: string[], uri: string): void {
   // launches and run the game's Proton/native command directly ourselves, which was
   // deliberately not done: it would need per-game Proton prefix/compat-data plumbing and
   // loses the overlay, for a two-second cosmetic flash. Revisit only if asked again.
-  spawnDetached(cmd, [...args, uri, '-silent'])
+  const running = steamArgv(execCommand, [uri, '-silent'])
+  spawnDetached(running.cmd, running.args)
 }
 
 /**
@@ -553,19 +590,23 @@ function steamUri(execCommand: string[], uri: string): void {
  * closeSteamWindow() confirms (via the on-disk manifest) that the user has actually
  * clicked through it and a download has begun.
  */
-function steamUriForInstall(execCommand: string[], uri: string): void {
-  const [cmd, ...args] = execCommand
-  if (!isSteamRunning()) {
-    spawnDetached(cmd, [...args, '-silent'])
-    setTimeout(() => spawnDetached(cmd, [...args, uri]), 4000)
+function steamUriForInstall(execCommand: string[], variant: SteamDetection['variant'], uri: string): void {
+  if (!isSteamRunning(variant)) {
+    const cold = steamArgv(execCommand, ['-silent'])
+    spawnDetached(cold.cmd, cold.args)
+    setTimeout(() => {
+      const warm = steamArgv(execCommand, [uri])
+      spawnDetached(warm.cmd, warm.args)
+    }, 4000)
     return
   }
-  spawnDetached(cmd, [...args, uri])
+  const running = steamArgv(execCommand, [uri])
+  spawnDetached(running.cmd, running.args)
 }
 
 export function launchSteamGame(det: SteamDetection, appId: string): void {
   if (!det.execCommand) return
-  steamUri(det.execCommand, `steam://rungameid/${appId}`)
+  steamUri(det.execCommand, det.variant, `steam://rungameid/${appId}`)
 }
 
 function sleep(ms: number): Promise<void> {
@@ -593,7 +634,7 @@ export async function installSteamGame(
   onProgress?: (p: SteamInstallProgress) => void
 ): Promise<void> {
   if (!det.execCommand || !det.root) throw new Error('Steam not found')
-  steamUriForInstall(det.execCommand, `steam://install/${appId}`)
+  steamUriForInstall(det.execCommand, det.variant, `steam://install/${appId}`)
 
   // Deliberately no fixed delay before polling starts: the dialog now stays open on its
   // own (see steamUriForInstall) until the user actually clicks Install, however long
@@ -637,7 +678,7 @@ export async function uninstallSteamGame(det: SteamDetection, appId: string): Pr
   // instant the confirm click actually happens, well before the files are removed or
   // the manifest disappears - that bit is the real "confirmed" signal that was missing,
   // not a guessed delay, so it's safe to close the window on exactly like install does.
-  steamUri(det.execCommand, `steam://uninstall/${appId}`)
+  steamUri(det.execCommand, det.variant, `steam://uninstall/${appId}`)
 
   let windowClosed = false
   const deadline = Date.now() + 5 * 60 * 1000

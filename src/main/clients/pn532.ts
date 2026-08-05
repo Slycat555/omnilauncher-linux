@@ -158,6 +158,9 @@ export class Pn532 extends EventEmitter<Pn532Events> {
   private closed = false
   private lastUid: string | null = null
   private consecutiveFailures = 0
+  /** Last error *code* (e.g. 'EACCES') surfaced via the 'error' event, so a permissions
+   *  problem gets reported once instead of on every ~150ms poll retry - see handshake(). */
+  private lastErrorCode: string | null = null
   /** Set via requestWrite(); consumed by the next tag seen, then cleared - same
    *  "next tag wins" contract the old design had. */
   private pendingWriteText: string | null = null
@@ -243,9 +246,40 @@ export class Pn532 extends EventEmitter<Pn532Events> {
             300
           )
           this.consecutiveFailures = 0
+          this.lastErrorCode = null
           return true
         }
-      } catch {
+      } catch (err) {
+        // EACCES (the device node exists but this user can't open it - the classic gap
+        // between distros/images that pre-add the user to `dialout`/give it a udev ACL
+        // and ones that don't) will never resolve itself by retrying the handshake, and
+        // previously looked byte-for-byte identical to "chip just isn't answering yet":
+        // a silent, endlessly-retried 'no response'. Surface it once (not on every
+        // ~150ms poll tick - see pollLoop) instead of leaving it indistinguishable from
+        // a genuinely dead/unplugged reader.
+        //
+        // @serialport/bindings-cpp's own BindingsError (thrown by openPort() above)
+        // never sets .code at all - confirmed directly in its source
+        // (dist/errors.js only carries a message + .canceled, and the native addon
+        // builds that message as "Error %s Cannot open %s" with %s = strerror(errno),
+        // i.e. the literal text "Permission denied", not the symbolic errno name) - so
+        // a `.code === 'EACCES'` check here can never match a real permission failure
+        // from this library. Match on the message text it actually produces instead,
+        // falling back to .code too in case some other error path does set it.
+        const message = err instanceof Error ? err.message : String(err)
+        const code = (err as NodeJS.ErrnoException)?.code
+        const isPermissionError = code === 'EACCES' || /permission denied/i.test(message)
+        if (isPermissionError && this.lastErrorCode !== 'EACCES') {
+          this.lastErrorCode = 'EACCES'
+          this.emit(
+            'error',
+            new Error(
+              `Permission denied opening ${this.devicePath}. Add your user to the ` +
+                `"dialout" group (sudo usermod -aG dialout $USER, then log out and back ` +
+                `in) or add a udev rule granting access to the reader.`
+            )
+          )
+        }
         this.emit('handshake', attempt, false)
       }
       await this.closePort(false)

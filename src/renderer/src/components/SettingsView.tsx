@@ -80,6 +80,54 @@ function StoreLoginRow({
   )
 }
 
+function NfcPermissionRow(): React.JSX.Element {
+  const nfcAvailable = useAppStore((s) => s.nfcAvailable)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  async function fix(): Promise<void> {
+    setBusy(true)
+    setResult(null)
+    try {
+      const res = await window.api.fixNfcPermissions()
+      setResult(res)
+    } catch (err) {
+      setResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="client-status-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span>
+          <span className={`status-dot ${nfcAvailable ? 'on' : 'off'}`} />
+          NFC reader
+        </span>
+        {!nfcAvailable && (
+          <button className="btn" disabled={busy} onClick={() => void fix()}>
+            {busy ? 'Requesting permission…' : 'Fix permissions'}
+          </button>
+        )}
+      </div>
+      <span className="hint">
+        {nfcAvailable
+          ? 'Reader detected and connected.'
+          : 'If a PN532 reader is plugged in but not detected, this is almost always a Linux ' +
+            'permissions issue (the device node exists but this account can\'t open it yet), ' +
+            'not a missing reader. "Fix permissions" asks for a one-time admin password to grant ' +
+            'access - the same kind of prompt any Linux app uses for a one-off privileged action.'}
+      </span>
+      {result && (
+        <span style={{ color: result.ok ? 'var(--good)' : 'var(--bad)', fontSize: 12 }}>
+          {result.message}
+        </span>
+      )}
+    </div>
+  )
+}
+
 function StatusRow({ label, on, detail }: { label: string; on: boolean; detail?: string }): React.JSX.Element {
   return (
     <div className="client-status-row">
@@ -165,6 +213,15 @@ export function SettingsView({ detection }: { detection: DetectionResult | null 
           <StatusRow label="legendary (Epic backend)" on={!!detection?.heroic.legendary} />
           <StatusRow label="gogdl (GOG backend)" on={!!detection?.heroic.gogdl} />
           <StatusRow label="nile (Amazon backend)" on={!!detection?.heroic.nile} />
+        </div>
+      </div>
+
+      <div>
+        <div className="section-label" style={{ marginBottom: 10 }}>
+          NFC
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <NfcPermissionRow />
         </div>
       </div>
 

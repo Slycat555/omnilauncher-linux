@@ -17,6 +17,7 @@ import { getGameIdForTag, recordTagWrite } from './nfcTagsStore'
 let reader: Pn532 | null = null
 let onScanCb: ((gameId: string) => void) | null = null
 let onAvailabilityChangeCb: ((available: boolean) => void) | null = null
+let onErrorCb: ((message: string) => void) | null = null
 /** Set only while a write is pending, so writeGameToTag() can reject a second call
  *  instead of racing with the first - the actual pending state (which tag gets it) now
  *  lives inside the Pn532 instance itself via requestWrite(), since reads/writes happen
@@ -50,8 +51,20 @@ function findDevicePath(): string | null {
   }
 }
 
+/**
+ * "Available" means actually connected - a real, successful handshake with the chip -
+ * not just "a /dev/ttyUSB0-shaped device node happens to exist". Those are not the same
+ * thing: a device node with the wrong permissions, or a ttyUSB port that's some other
+ * USB-serial gadget entirely, both satisfy the old device-node-only check while never
+ * being usable. That gap is exactly what made Settings show "reader detected and
+ * connected" (hiding the "Fix permissions" button under it) while the console was
+ * simultaneously logging nothing but failed handshakes underneath. lastReportedAvailable
+ * is set from the reader's own 'status' event (see startNfcWatcher below), so this
+ * always reflects a real, current connection - null (nothing attempted/known yet) counts
+ * as unavailable, same as false.
+ */
 export function isNfcAvailable(): boolean {
-  return findDevicePath() !== null
+  return lastReportedAvailable === true
 }
 
 let detectTimer: NodeJS.Timeout | null = null
@@ -74,10 +87,12 @@ let detectTimer: NodeJS.Timeout | null = null
  *  wasn't already plugged in and enumerated by the time the app launched. */
 export function startNfcWatcher(
   onScan: (gameId: string) => void,
-  onAvailabilityChange?: (available: boolean) => void
+  onAvailabilityChange?: (available: boolean) => void,
+  onError?: (message: string) => void
 ): void {
   onScanCb = onScan
   if (onAvailabilityChange) onAvailabilityChangeCb = onAvailabilityChange
+  if (onError) onErrorCb = onError
   if (reader) return
   const path = findDevicePath()
   if (!path) {
@@ -110,6 +125,10 @@ export function startNfcWatcher(
   })
   reader.on('handshake', (attempt, ok) => {
     console.log(`[NFC] handshake attempt ${attempt}: ${ok ? 'OK' : 'no response'}`)
+  })
+  reader.on('error', (err) => {
+    console.error(`[NFC] ${err.message}`)
+    onErrorCb?.(err.message)
   })
   reader.on('tag', (tag) => {
     console.log(`[NFC] tag detected, uid=${tag.uid}`)
