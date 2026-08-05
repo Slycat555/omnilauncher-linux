@@ -30,6 +30,7 @@ import { installManager, type RuntimeContext as InstallCtx } from './installMana
 import { launchGame, type RuntimeContext as LaunchCtx } from './launchManager'
 import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } from './library'
 import { isNfcAvailable, startNfcWatcher, writeGameToTag } from './nfcManager'
+import { fixNfcPermissions } from './clients/nfcPermissionFix'
 import { chooseCover, getCoverArt, searchCoverOptions } from './steamgriddb'
 
 let gameIndex = new Map<string, UnifiedGame>()
@@ -160,8 +161,15 @@ export function registerIpcHandlers(): void {
     if (!game) throw new Error('Unknown game')
     const { steam, heroic } = await getRuntimeDetections()
     const ctx: LaunchCtx = { steam, heroic }
+    // running:true is sent immediately (see launchManager.ts), before any process
+    // exists - the Play button already goes disabled/"Running…" for the whole launch
+    // attempt, including a first Windows launch that has to fetch Proton-GE first.
     const onState = (evt: LaunchStateEvent): void => broadcast('launch:state', evt)
-    launchGame(game, ctx, onState)
+    // Reuses the same 'install:progress' channel the install flow already broadcasts on
+    // (see installManager) purely so that download's lines land in consoleLog/progress
+    // state the same way an install's do, for whenever the UI surfaces those.
+    const onProgress = (evt: InstallProgressEvent): void => broadcast('install:progress', evt)
+    void launchGame(game, ctx, onState, onProgress)
   })
 
   safeHandle('shell:openPath', async (_e, path: string) => {
@@ -209,6 +217,8 @@ export function registerIpcHandlers(): void {
 
   safeHandle('nfc:available', async () => isNfcAvailable())
 
+  safeHandle('nfc:fixPermissions', async () => fixNfcPermissions())
+
   safeHandle('nfc:writeGame', async (_e, gameId: string) => {
     if (!gameIndex.has(gameId)) throw new Error('Unknown game')
     await writeGameToTag(gameId)
@@ -229,6 +239,7 @@ export function registerIpcHandlers(): void {
       // A tag that doesn't match any known game (wiped, foreign, or from a game removed
       // from the library since) is silently ignored - there's nothing useful to launch.
     },
-    (available) => broadcast('nfc:availabilityChanged', available)
+    (available) => broadcast('nfc:availabilityChanged', available),
+    (message) => broadcast('app:warning', message)
   )
 }

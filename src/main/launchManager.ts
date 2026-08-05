@@ -1,11 +1,11 @@
 import { spawn } from 'child_process'
-import type { LaunchStateEvent, UnifiedGame } from '../shared/types'
+import type { InstallProgressEvent, LaunchStateEvent, UnifiedGame } from '../shared/types'
 import type { HeroicDetection, SteamDetection } from './clients/detect'
 import {
   buildAmazonLaunchCommand,
   buildEpicLaunchCommand,
   buildGogLaunchCommand,
-  resolveWineForGame
+  resolveOrInstallWineForGame
 } from './clients/heroic'
 import {
   armSteamWindowSuppression,
@@ -23,6 +23,7 @@ export interface RuntimeContext {
 }
 
 type StateCb = (evt: LaunchStateEvent) => void
+type ProgressCb = (evt: InstallProgressEvent) => void
 
 const runningIds = new Set<string>()
 
@@ -30,8 +31,21 @@ export function isRunning(gameId: string): boolean {
   return runningIds.has(gameId)
 }
 
-export function launchGame(game: UnifiedGame, ctx: RuntimeContext, onState: StateCb): void {
+export async function launchGame(
+  game: UnifiedGame,
+  ctx: RuntimeContext,
+  onState: StateCb,
+  onProgress?: ProgressCb
+): Promise<void> {
   if (runningIds.has(game.id)) return
+  // Reported immediately, not once a process actually exists - a Windows title with no
+  // Proton available yet spends anywhere up to a couple of minutes downloading one (see
+  // resolveOrInstallWineForGame) before anything spawns, and the Play button otherwise
+  // sat fully clickable (and re-clickable) that whole time with zero indication anything
+  // was happening. This is exactly the same "reported before dispatch" reasoning already
+  // used for arming Steam's window suppression right below.
+  runningIds.add(game.id)
+  onState({ gameId: game.id, running: true })
 
   if (game.store === 'steam') {
     // Armed BEFORE dispatch, not after - the "Launching..." dialog can appear within
@@ -43,8 +57,6 @@ export function launchGame(game: UnifiedGame, ctx: RuntimeContext, onState: Stat
     // actual game from us entirely - so instead of guessing with a fixed timeout, poll
     // for the "reaper SteamLaunch AppId=..." process Steam itself launches every game
     // (native or Proton) under, and only report `running: false` once it's gone.
-    runningIds.add(game.id)
-    onState({ gameId: game.id, running: true })
     const startedAt = Date.now()
     const tick = (): boolean => {
       // -silent keeps Steam's main library window from opening on its own, but it does
@@ -84,7 +96,10 @@ export function launchGame(game: UnifiedGame, ctx: RuntimeContext, onState: Stat
     return
   }
 
-  const wine = game.platform === 'windows' ? resolveWineForGame(ctx.heroic, game.appId) : null
+  const wine =
+    game.platform === 'windows'
+      ? await resolveOrInstallWineForGame(ctx.heroic, game.store, game.appId, ctx.steam.root, game.id, onProgress)
+      : null
   const builder =
     game.store === 'gog'
       ? buildGogLaunchCommand(ctx.heroic, game, wine, ctx.steam.root)
@@ -93,12 +108,13 @@ export function launchGame(game: UnifiedGame, ctx: RuntimeContext, onState: Stat
         : buildAmazonLaunchCommand(ctx.heroic, game, wine)
 
   if (!builder) {
+    runningIds.delete(game.id)
     onState({
       gameId: game.id,
       running: false,
       error:
         game.platform === 'windows'
-          ? 'No Wine/Proton configured for this game. Configure it once in Heroic, then try again.'
+          ? 'No Wine/Proton available and downloading Proton-GE failed - check your network connection and try again.'
           : 'Unable to build a launch command (backend CLI not found).'
     })
     return
@@ -109,9 +125,6 @@ export function launchGame(game: UnifiedGame, ctx: RuntimeContext, onState: Stat
     env: { ...process.env, ...builder.env },
     detached: true
   })
-
-  runningIds.add(game.id)
-  onState({ gameId: game.id, running: true })
 
   let outputTail = ''
   child.stderr?.on('data', (chunk: Buffer) => {

@@ -102,3 +102,8 @@ export interface StoreAuthStatus {
   epic: boolean
   amazon: boolean
 }
+
+export interface NfcFixResult {
+  ok: boolean
+  message: string
+}

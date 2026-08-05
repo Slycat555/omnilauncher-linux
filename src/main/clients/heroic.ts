@@ -1,8 +1,9 @@
 import { execFile } from 'child_process'
-import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { promisify } from 'util'
-import type { GamePlatform, StoreKind, UnifiedGame } from '../../shared/types'
+import type { GamePlatform, InstallProgressEvent, StoreKind, UnifiedGame } from '../../shared/types'
+import { appConfigDir } from '../paths'
 import {
   gogdlManifestPath,
   heroicDefaultInstallPath,
@@ -10,6 +11,7 @@ import {
   runnerEnv,
   type HeroicDetection
 } from './detect'
+import { compatToolsDir, downloadLatestGEProton } from './protonGE'
 
 const execFileP = promisify(execFile)
 
@@ -597,25 +599,101 @@ interface HeroicGlobalConfig {
   }
 }
 
+/**
+ * Real Heroic never actually requires the user to hand-configure Wine/Proton before a
+ * first launch - it auto-picks (and if needed, downloads) a runtime itself. Reading only
+ * Heroic's own per-game/global config replicated the "already configured" half of that,
+ * but not the "auto-pick one" half, so a game installed and launched only through this
+ * app (Heroic's UI never opened) always hit the "No Wine/Proton configured... Configure
+ * it once in Heroic" dead end in launchManager.ts - confirmed as the exact bug reported:
+ * a first launch demanding a trip through Heroic's UI first. Checks, in order: an
+ * existing Steam-managed Proton (compatibilitytools.d - where ProtonUp-Qt-installed
+ * GE-Proton lives - then steamapps/common), then whatever this app previously downloaded
+ * itself into compatToolsDir() (see downloadLatestGEProton / resolveOrInstallWineForGame
+ * below, which is what actually fetches one the very first time nothing is found here).
+ */
+function findSteamProton(steamRoot: string | null): { bin: string; version: string } | null {
+  const candidateDirs = [
+    ...(steamRoot ? [join(steamRoot, 'compatibilitytools.d')] : []), // user-installed (ProtonUp-Qt etc.) - preferred
+    ...(steamRoot ? [join(steamRoot, 'steamapps', 'common')] : []), // official Proton versions Steam itself installed
+    compatToolsDir() // whatever this app previously downloaded itself (see downloadLatestGEProton)
+  ]
+  const found: Array<{ bin: string; version: string }> = []
+  for (const dir of candidateDirs) {
+    if (!existsSync(dir)) continue
+    let entries: string[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && /proton/i.test(e.name))
+        .map((e) => e.name)
+    } catch {
+      continue
+    }
+    for (const name of entries.sort().reverse()) {
+      const bin = join(dir, name, 'proton')
+      if (existsSync(bin)) found.push({ bin, version: name })
+    }
+    if (found.length > 0) break // prefer compatibilitytools.d entirely over steamapps/common
+  }
+  return found[0] ?? null
+}
+
+/** Prefix for a game this app launched through its own Steam-Proton fallback, since
+ *  there is no Heroic-owned prefix to reuse in that case. */
+function ownedPrefixDir(store: StoreKind, appId: string): string {
+  const dir = join(appConfigDir(), 'prefixes', `${store}-${appId}`)
+  mkdirSync(dir, { recursive: true })
+  return dir
+}
+
 export function resolveWineForGame(
   det: HeroicDetection,
-  appId: string
+  store: StoreKind,
+  appId: string,
+  steamRoot: string | null
 ): { bin: string; prefix: string; type: string } | null {
-  if (!det.configDir) return null
-  const perGame = readJsonSafe<HeroicGameConfigFile>(
-    join(det.configDir, 'GamesConfig', `${appId}.json`)
-  )
-  const entry = perGame?.[appId]
-  if (entry?.wineVersion?.bin && entry?.winePrefix) {
-    return { bin: entry.wineVersion.bin, prefix: entry.winePrefix, type: entry.wineVersion.type ?? 'wine' }
+  if (det.configDir) {
+    const perGame = readJsonSafe<HeroicGameConfigFile>(
+      join(det.configDir, 'GamesConfig', `${appId}.json`)
+    )
+    const entry = perGame?.[appId]
+    if (entry?.wineVersion?.bin && entry?.winePrefix) {
+      return { bin: entry.wineVersion.bin, prefix: entry.winePrefix, type: entry.wineVersion.type ?? 'wine' }
+    }
+    const global = readJsonSafe<HeroicGlobalConfig>(join(det.configDir, 'config.json'))
+    const bin = global?.defaultSettings?.wineVersion?.bin
+    const prefix = global?.defaultSettings?.defaultWinePrefix
+    if (bin && prefix && existsSync(bin)) {
+      return { bin, prefix, type: global?.defaultSettings?.wineVersion?.type ?? 'wine' }
+    }
   }
-  const global = readJsonSafe<HeroicGlobalConfig>(join(det.configDir, 'config.json'))
-  const bin = global?.defaultSettings?.wineVersion?.bin
-  const prefix = global?.defaultSettings?.defaultWinePrefix
-  if (bin && prefix && existsSync(bin)) {
-    return { bin, prefix, type: global?.defaultSettings?.wineVersion?.type ?? 'wine' }
-  }
-  return null
+  const proton = findSteamProton(steamRoot)
+  if (!proton) return null
+  return { bin: proton.bin, prefix: ownedPrefixDir(store, appId), type: 'proton' }
+}
+
+/**
+ * Same as resolveWineForGame, but when nothing is found anywhere (no Heroic config, no
+ * Steam-managed Proton, nothing this app fetched before) it downloads the latest
+ * GE-Proton release instead of giving up - this is the piece that makes a first launch
+ * "just work" the way it does through real Heroic's own Wine Manager, rather than
+ * requiring the user to have ProtonUp-Qt'd a runtime into Steam beforehand. onProgress
+ * (optional) gets the same InstallProgressEvent shape/'install:progress' channel the
+ * game-install flow already uses, so a download in progress shows the same familiar
+ * per-card progress bar instead of a silent multi-minute pause on first launch. */
+export async function resolveOrInstallWineForGame(
+  det: HeroicDetection,
+  store: StoreKind,
+  appId: string,
+  steamRoot: string | null,
+  gameId: string,
+  onProgress?: (evt: InstallProgressEvent) => void
+): Promise<{ bin: string; prefix: string; type: string } | null> {
+  const existing = resolveWineForGame(det, store, appId, steamRoot)
+  if (existing) return existing
+  const runtime = await downloadLatestGEProton(gameId, onProgress ?? (() => {}))
+  if (!runtime) return null
+  return { bin: runtime.bin, prefix: ownedPrefixDir(store, appId), type: 'proton' }
 }
 
 export async function readHeroicLibrary(det: HeroicDetection): Promise<UnifiedGame[]> {

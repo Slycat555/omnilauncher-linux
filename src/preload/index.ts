@@ -6,6 +6,7 @@ import type {
   DetectionResult,
   InstallProgressEvent,
   LaunchStateEvent,
+  NfcFixResult,
   SettingsPatch,
   StoreAuthStatus,
   UnifiedGame
@@ -50,6 +51,7 @@ const api = {
   logoutEpic: (): Promise<void> => ipcRenderer.invoke('auth:logoutEpic'),
   logoutAmazon: (): Promise<void> => ipcRenderer.invoke('auth:logoutAmazon'),
   isNfcAvailable: (): Promise<boolean> => ipcRenderer.invoke('nfc:available'),
+  fixNfcPermissions: (): Promise<NfcFixResult> => ipcRenderer.invoke('nfc:fixPermissions'),
   writeGameToTag: (gameId: string): Promise<void> => ipcRenderer.invoke('nfc:writeGame', gameId),
   onNfcTagScanned: (cb: (gameId: string) => void): (() => void) => {
     const listener = (_e: unknown, gameId: string): void => cb(gameId)
