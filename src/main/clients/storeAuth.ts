@@ -4,6 +4,7 @@ import { join } from 'path'
 import { promisify } from 'util'
 import { loginAmazonWindow, loginEpicWindow, loginGogWindow } from './authWindow'
 import { runnerEnv, type HeroicDetection } from './detect'
+import { syncGogLibraryCache } from './gogCatalog'
 
 const execFileP = promisify(execFile)
 
@@ -68,6 +69,10 @@ export async function loginGog(det: HeroicDetection): Promise<void> {
   if (out.includes('"error"') || !existsSync(authPath)) {
     throw new Error('GOG rejected the login. Try again.')
   }
+  // Best-effort: a failed catalog sync just means readGogLibrary finds no cache yet
+  // (same empty state as before this call existed) - the login itself already
+  // succeeded and must not be reported as a failure over this.
+  await syncGogLibraryCache(det, authPath).catch(() => {})
 }
 
 /** gogdl has no logout subcommand - Heroic itself just deletes the token file, so this

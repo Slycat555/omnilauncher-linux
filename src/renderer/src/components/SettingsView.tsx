@@ -15,6 +15,7 @@ function StoreLoginRow({
 }): React.JSX.Element {
   const [busy, setBusy] = useState<'login' | 'logout' | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const refresh = useAppStore((s) => s.refresh)
 
   async function login(): Promise<void> {
     setBusy('login')
@@ -26,6 +27,12 @@ function StoreLoginRow({
       else if (store === 'epic') await window.api.loginEpic()
       else await window.api.loginAmazon()
       onLoggedIn()
+      // authStatus only gates which already-fetched games are shown (see its doc
+      // comment in store.ts) - it never causes a fetch itself. Without this, a store
+      // logged into for the first time stays looking empty until something else
+      // happens to call refresh() (previously: nothing did, short of restarting the
+      // app), even though the login itself succeeded.
+      void refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -41,6 +48,7 @@ function StoreLoginRow({
       else if (store === 'epic') await window.api.logoutEpic()
       else await window.api.logoutAmazon()
       onLoggedIn()
+      void refresh()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
