@@ -8,6 +8,7 @@ import { Sidebar } from './components/Sidebar'
 import { Titlebar } from './components/Titlebar'
 import { Toast } from './components/Toast'
 import { TopBar } from './components/TopBar'
+import { WineLockOverlay } from './components/WineLockOverlay'
 import type { StoreFilter } from './store'
 import { useAppStore } from './store'
 import { useGamepadNav } from './useGamepadNav'
@@ -23,6 +24,7 @@ function App(): React.JSX.Element {
     installedOnly,
     manageMode,
     runningGameIds,
+    wineActivity,
     authStatus,
     init,
     refresh,
@@ -34,6 +36,7 @@ function App(): React.JSX.Element {
   } = useAppStore()
 
   const anyGameRunning = Object.keys(runningGameIds).length > 0
+  const uiLocked = wineActivity.active
 
   const [view, setView] = useState<'library' | 'settings'>('library')
   const [focusedIndex, setFocusedIndex] = useState(0)
@@ -55,6 +58,12 @@ function App(): React.JSX.Element {
   useEffect(() => {
     void init()
   }, [init])
+
+  // `inert` stops new focus, but whatever already had it (the search box, a button)
+  // could otherwise keep receiving keystrokes meant for the game.
+  useEffect(() => {
+    if (uiLocked && document.activeElement instanceof HTMLElement) document.activeElement.blur()
+  }, [uiLocked])
 
   // CSS zoom (not transform: scale) so hit-testing/layout scale together with the visual
   // size - a controller/mouse click still lands where the bigger button visually is.
@@ -222,7 +231,7 @@ function App(): React.JSX.Element {
     // face-button press meant for the game (which has no window focus tug-of-war to
     // rely on, since both read raw gamepad state independently) could just as easily
     // land on the launcher and fire another install/launch/tab switch mid-session.
-    enabled: view === 'library' && !anyGameRunning,
+    enabled: view === 'library' && !anyGameRunning && !uiLocked,
     onDirection: move,
     onConfirm: () => {
       const g = filteredGames[focusedIndex]
@@ -235,6 +244,7 @@ function App(): React.JSX.Element {
 
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
+      if (uiLocked) return
       if (document.activeElement?.tagName === 'INPUT') return
       if (e.key === 'Escape' && manageMode) toggleManageMode()
       else if (e.key === 'ArrowRight') move('right')
@@ -249,14 +259,14 @@ function App(): React.JSX.Element {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredGames, focusedIndex, manageMode])
+  }, [filteredGames, focusedIndex, manageMode, uiLocked])
 
   const focusedGame = filteredGames[focusedIndex]
 
   return (
     <div className="app-root">
       <Titlebar />
-      <div className="app-shell">
+      <div className="app-shell" inert={uiLocked}>
         <Sidebar
           games={visibleGames}
           settings={settings}
@@ -291,6 +301,7 @@ function App(): React.JSX.Element {
         <GameDetailsPanel />
         <NfcLaunchOverlay />
       </div>
+      <WineLockOverlay />
     </div>
   )
 }

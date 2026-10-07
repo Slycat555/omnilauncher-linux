@@ -7,7 +7,8 @@ import type {
   InstallProgressEvent,
   StoreAuthStatus,
   StoreKind,
-  UnifiedGame
+  UnifiedGame,
+  WineActivity
 } from '../../shared/types'
 
 export type StoreFilter = 'all' | StoreKind
@@ -36,6 +37,10 @@ interface AppState {
    *  used to disable gamepad navigation while in-game, so a controller input meant
    *  for the game itself can never accidentally launch/switch something in the UI. */
   runningGameIds: Record<string, true>
+
+  /** Any Wine/Proton process running on the system, from the main process's monitor -
+   *  the whole UI is locked while this is active (see WineLockOverlay). */
+  wineActivity: WineActivity
 
   coverPickerGameId: string | null
   coverPickerOptions: CoverOption[]
@@ -113,6 +118,7 @@ const store = createStore<AppState>((set, get) => ({
   bulkUninstalling: false,
 
   runningGameIds: {},
+  wineActivity: { active: false, processes: [] },
 
   coverPickerGameId: null,
   coverPickerOptions: [],
@@ -138,6 +144,11 @@ const store = createStore<AppState>((set, get) => ({
 
   init: async () => {
     set({ loading: true })
+    // Subscribed before the (slow) library scan below, not after it like the other
+    // listeners - a game may already be running when the launcher starts, and the UI
+    // has to be locked from the very first paint, not once covers finish loading.
+    window.api.onWineActivity((wineActivity) => set({ wineActivity }))
+    void window.api.getWineActivity().then((wineActivity) => set({ wineActivity }))
     try {
       const [cached, detection, settings] = await Promise.all([
         window.api.getLibrary(),
@@ -165,6 +176,7 @@ const store = createStore<AppState>((set, get) => ({
       void get().refreshAuthStatus()
       void window.api.isNfcAvailable().then((nfcAvailable) => set({ nfcAvailable }))
       window.api.onNfcTagScanned((gameId) => {
+        if (get().wineActivity.active) return
         const game = get().games.find((g) => g.id === gameId)
         if (!game) return
         // Only show the launch overlay when the scan actually results in launching the

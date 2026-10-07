@@ -9,7 +9,8 @@ import type {
   NfcFixResult,
   SettingsPatch,
   StoreAuthStatus,
-  UnifiedGame
+  UnifiedGame,
+  WineActivity
 } from '../shared/types'
 
 const api = {
@@ -77,6 +78,12 @@ const api = {
     const listener = (_e: unknown, games: UnifiedGame[]): void => cb(games)
     ipcRenderer.on('library:updated', listener)
     return () => ipcRenderer.removeListener('library:updated', listener)
+  },
+  getWineActivity: (): Promise<WineActivity> => ipcRenderer.invoke('wine:getActivity'),
+  onWineActivity: (cb: (activity: WineActivity) => void): (() => void) => {
+    const listener = (_e: unknown, activity: WineActivity): void => cb(activity)
+    ipcRenderer.on('wine:activity', listener)
+    return () => ipcRenderer.removeListener('wine:activity', listener)
   },
   onWarning: (cb: (message: string) => void): (() => void) => {
     const listener = (_e: unknown, message: string): void => cb(message)

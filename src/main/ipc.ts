@@ -4,7 +4,8 @@ import type {
   LaunchStateEvent,
   SettingsPatch,
   StoreAuthStatus,
-  UnifiedGame
+  UnifiedGame,
+  WineActivity
 } from '../shared/types'
 import {
   amazonLoggedIn,
@@ -32,6 +33,7 @@ import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } fro
 import { isNfcAvailable, startNfcWatcher, writeGameToTag } from './nfcManager'
 import { fixNfcPermissions } from './clients/nfcPermissionFix'
 import { chooseCover, getCoverArt, searchCoverOptions } from './steamgriddb'
+import { getWineActivity, startWineMonitor } from './wineMonitor'
 
 let gameIndex = new Map<string, UnifiedGame>()
 
@@ -42,6 +44,15 @@ function indexGames(games: UnifiedGame[]): void {
 function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
     win.webContents.send(channel, payload)
+  }
+}
+
+/** The renderer locks itself while Wine is active, but this is the real gate - an
+ *  action already in flight, or any path that bypasses the UI, must not be able to
+ *  start an install/launch on top of a running Windows game either. */
+function assertNoWineRunning(): void {
+  if (getWineActivity().active) {
+    throw new Error('A Wine/Proton game is running - close it first.')
   }
 }
 
@@ -127,6 +138,7 @@ export function registerIpcHandlers(): void {
   })
 
   safeHandle('game:install', async (_e, gameId: string) => {
+    assertNoWineRunning()
     const game = gameIndex.get(gameId)
     if (!game) throw new Error('Unknown game')
     const { steam, heroic } = await getRuntimeDetections()
@@ -144,6 +156,7 @@ export function registerIpcHandlers(): void {
   })
 
   safeHandle('game:uninstall', async (_e, gameId: string) => {
+    assertNoWineRunning()
     const game = gameIndex.get(gameId)
     if (!game) throw new Error('Unknown game')
     const { steam, heroic } = await getRuntimeDetections()
@@ -157,6 +170,7 @@ export function registerIpcHandlers(): void {
   })
 
   safeHandle('game:launch', async (_e, gameId: string) => {
+    assertNoWineRunning()
     const game = gameIndex.get(gameId)
     if (!game) throw new Error('Unknown game')
     const { steam, heroic } = await getRuntimeDetections()
@@ -229,6 +243,9 @@ export function registerIpcHandlers(): void {
   startNfcWatcher(
     (gameId) => {
       if (!gameIndex.has(gameId)) return
+      // Showing the window would pop the launcher on top of the running game, and the
+      // launch itself would be refused anyway - ignore the scan entirely.
+      if (getWineActivity().active) return
       // The app normally sits hidden to the tray - without this, a scan would launch
       // the game and broadcast the tag-scanned event to a window nobody's looking at,
       // so our own "Launching…" overlay (and Steam's transient dialog on top of it)
@@ -242,4 +259,7 @@ export function registerIpcHandlers(): void {
     (available) => broadcast('nfc:availabilityChanged', available),
     (message) => broadcast('app:warning', message)
   )
+
+  safeHandle('wine:getActivity', async () => getWineActivity())
+  startWineMonitor((activity: WineActivity) => broadcast('wine:activity', activity))
 }

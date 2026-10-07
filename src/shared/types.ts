@@ -55,6 +55,14 @@ export interface LaunchStateEvent {
   error?: string
 }
 
+/** Whether any Wine/Proton process is running anywhere on the system (not only games
+ *  launched from this app) - the UI is locked for as long as this is active. */
+export interface WineActivity {
+  active: boolean
+  /** Windows executables seen, minus Wine's own helpers - for display only. */
+  processes: string[]
+}
+
 export type ClientVariant = 'native' | 'flatpak' | null
 
 export interface ClientStatus {
