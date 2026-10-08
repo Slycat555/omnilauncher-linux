@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import type { AppSettings, DetectionResult } from '../../../shared/types'
+import type { AppSettings, ControllerSetupStatus, DetectionResult } from '../../../shared/types'
 import { useAppStore } from '../store'
 
 function StoreLoginRow({
@@ -57,7 +57,10 @@ function StoreLoginRow({
   }
 
   return (
-    <div className="client-status-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+    <div
+      className="client-status-row"
+      style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span>
           <span className={`status-dot ${loggedIn ? 'on' : 'off'}`} />
@@ -76,6 +79,72 @@ function StoreLoginRow({
         </div>
       </div>
       {error && <span style={{ color: 'var(--bad)', fontSize: 12 }}>{error}</span>}
+    </div>
+  )
+}
+
+function ControllerSetupRow(): React.JSX.Element {
+  const [status, setStatus] = useState<ControllerSetupStatus | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
+
+  useEffect(() => {
+    void window.api
+      .getControllerSetupStatus()
+      .then(setStatus)
+      .catch(() => {})
+  }, [])
+
+  async function fix(): Promise<void> {
+    setBusy(true)
+    setResult(null)
+    try {
+      setResult(await window.api.fixControllerSetup())
+    } catch (err) {
+      setResult({ ok: false, message: err instanceof Error ? err.message : String(err) })
+    } finally {
+      setStatus(await window.api.getControllerSetupStatus().catch(() => null))
+      setBusy(false)
+    }
+  }
+
+  const missing = status
+    ? [
+        !status.evdev && 'python-evdev is not installed',
+        !status.uinput && "can't create the virtual controller (/dev/uinput)",
+        !status.devices && "can't open the connected controller"
+      ].filter(Boolean)
+    : []
+
+  return (
+    <div
+      className="client-status-row"
+      style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        <span>
+          <span className={`status-dot ${status?.ok ? 'on' : 'off'}`} />
+          Controller support
+        </span>
+        {status && !status.ok && (
+          <button className="btn" disabled={busy} onClick={() => void fix()}>
+            {busy ? 'Requesting permission…' : 'Set up'}
+          </button>
+        )}
+      </div>
+      <span className="hint">
+        {!status
+          ? 'Checking…'
+          : status.ok
+            ? 'Ready - controllers work in OmniLauncher and in games.'
+            : `Not ready: ${missing.join(', ')}. "Set up" asks for a one-time admin password ` +
+              'to install python-evdev and grant access to controllers.'}
+      </span>
+      {result && (
+        <span style={{ color: result.ok ? 'var(--good)' : 'var(--bad)', fontSize: 12 }}>
+          {result.message}
+        </span>
+      )}
     </div>
   )
 }
@@ -99,7 +168,10 @@ function NfcPermissionRow(): React.JSX.Element {
   }
 
   return (
-    <div className="client-status-row" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}>
+    <div
+      className="client-status-row"
+      style={{ flexDirection: 'column', alignItems: 'stretch', gap: 10 }}
+    >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <span>
           <span className={`status-dot ${nfcAvailable ? 'on' : 'off'}`} />
@@ -115,7 +187,7 @@ function NfcPermissionRow(): React.JSX.Element {
         {nfcAvailable
           ? 'Reader detected and connected.'
           : 'If a PN532 reader is plugged in but not detected, this is almost always a Linux ' +
-            'permissions issue (the device node exists but this account can\'t open it yet), ' +
+            "permissions issue (the device node exists but this account can't open it yet), " +
             'not a missing reader. "Fix permissions" asks for a one-time admin password to grant ' +
             'access - the same kind of prompt any Linux app uses for a one-off privileged action.'}
       </span>
@@ -128,7 +200,15 @@ function NfcPermissionRow(): React.JSX.Element {
   )
 }
 
-function StatusRow({ label, on, detail }: { label: string; on: boolean; detail?: string }): React.JSX.Element {
+function StatusRow({
+  label,
+  on,
+  detail
+}: {
+  label: string
+  on: boolean
+  detail?: string
+}): React.JSX.Element {
   return (
     <div className="client-status-row">
       <span>
@@ -136,7 +216,7 @@ function StatusRow({ label, on, detail }: { label: string; on: boolean; detail?:
         {label}
       </span>
       <span style={{ color: 'var(--text-2)', fontSize: 12 }}>
-        {on ? detail ?? 'Detected' : 'Not found'}
+        {on ? (detail ?? 'Detected') : 'Not found'}
       </span>
     </div>
   )
@@ -164,7 +244,11 @@ function ToggleRow({
   )
 }
 
-export function SettingsView({ detection }: { detection: DetectionResult | null }): React.JSX.Element {
+export function SettingsView({
+  detection
+}: {
+  detection: DetectionResult | null
+}): React.JSX.Element {
   const settings = useAppStore((s) => s.settings)
   const saveSettings = useAppStore((s) => s.saveSettings)
   const authStatus = useAppStore((s) => s.authStatus)
@@ -203,16 +287,33 @@ export function SettingsView({ detection }: { detection: DetectionResult | null 
           <StatusRow
             label="Steam"
             on={!!detection?.steam.present}
-            detail={detection?.steam.present ? `${detection.steam.variant} · ${detection.steam.root ?? ''}` : undefined}
+            detail={
+              detection?.steam.present
+                ? `${detection.steam.variant} · ${detection.steam.root ?? ''}`
+                : undefined
+            }
           />
           <StatusRow
             label="Heroic"
             on={!!detection?.heroic.present}
-            detail={detection?.heroic.present ? `${detection.heroic.variant} · ${detection.heroic.configDir ?? ''}` : undefined}
+            detail={
+              detection?.heroic.present
+                ? `${detection.heroic.variant} · ${detection.heroic.configDir ?? ''}`
+                : undefined
+            }
           />
           <StatusRow label="legendary (Epic backend)" on={!!detection?.heroic.legendary} />
           <StatusRow label="gogdl (GOG backend)" on={!!detection?.heroic.gogdl} />
           <StatusRow label="nile (Amazon backend)" on={!!detection?.heroic.nile} />
+        </div>
+      </div>
+
+      <div>
+        <div className="section-label" style={{ marginBottom: 10 }}>
+          Controllers
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <ControllerSetupRow />
         </div>
       </div>
 
@@ -228,12 +329,17 @@ export function SettingsView({ detection }: { detection: DetectionResult | null 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div className="section-label">Store accounts</div>
         <span className="hint">
-          Logs in through Heroic&apos;s own backends (gogdl/legendary/nile) - the same accounts Heroic
-          itself would use. Steam isn&apos;t listed here: its login only happens in the Steam client
-          itself, the same as installing and launching Steam games in this app.
+          Logs in through Heroic&apos;s own backends (gogdl/legendary/nile) - the same accounts
+          Heroic itself would use. Steam isn&apos;t listed here: its login only happens in the Steam
+          client itself, the same as installing and launching Steam games in this app.
         </span>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <StoreLoginRow store="gog" label="GOG" loggedIn={!!authStatus?.gog} onLoggedIn={refreshAuthStatus} />
+          <StoreLoginRow
+            store="gog"
+            label="GOG"
+            loggedIn={!!authStatus?.gog}
+            onLoggedIn={refreshAuthStatus}
+          />
           <StoreLoginRow
             store="epic"
             label="Epic Games"
@@ -268,8 +374,8 @@ export function SettingsView({ detection }: { detection: DetectionResult | null 
             }}
           />
           <span className="hint">
-            Makes text, covers and buttons bigger - useful when the app is on a TV viewed from
-            a couch. 100% is normal size.
+            Makes text, covers and buttons bigger - useful when the app is on a TV viewed from a
+            couch. 100% is normal size.
           </span>
         </div>
         <ToggleRow
@@ -288,7 +394,9 @@ export function SettingsView({ detection }: { detection: DetectionResult | null 
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
         <div className="section-label">Stores</div>
-        <span className="hint">Steam and GOG are always shown. Turn these on if you use them too.</span>
+        <span className="hint">
+          Steam and GOG are always shown. Turn these on if you use them too.
+        </span>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           <ToggleRow
             label="Epic Games"

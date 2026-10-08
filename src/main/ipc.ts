@@ -43,6 +43,11 @@ import { enableSteamRemoteDebugging, isSteamRunning } from './clients/steam'
 import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } from './library'
 import { isNfcAvailable, startNfcWatcher, writeGameToTag } from './nfcManager'
 import { fixNfcPermissions } from './clients/nfcPermissionFix'
+import {
+  autoFixControllerSetup,
+  controllerSetupStatus,
+  fixControllerSetup
+} from './controllerSetup'
 import { chooseCover, getCoverArt, searchCoverOptions } from './steamgriddb'
 import {
   clearAllHeroicSessionEnv,
@@ -329,6 +334,10 @@ export function registerIpcHandlers(): void {
 
   safeHandle('nfc:fixPermissions', async () => fixNfcPermissions())
 
+  safeHandle('controller:setupStatus', async () => controllerSetupStatus())
+
+  safeHandle('controller:fixSetup', async () => fixControllerSetup())
+
   safeHandle('nfc:writeGame', async (_e, gameId: string) => {
     if (!gameIndex.has(gameId)) throw new Error('Unknown game')
     await writeGameToTag(gameId)
@@ -393,6 +402,14 @@ export function registerIpcHandlers(): void {
         onProgress: (evt) => broadcast('install:progress', evt)
       })
     )
+    .catch(() => {})
+
+  // Outside Bazzite/SteamOS the controller layer usually can't run yet (no python-evdev,
+  // no access to /dev/uinput or the controller) - offer the one-prompt fix once.
+  void autoFixControllerSetup()
+    .then((res) => {
+      if (res) broadcast('app:warning', res.ok ? res.message : `Controller support: ${res.message}`)
+    })
     .catch(() => {})
 
   // The controller layer for OmniLauncher's own UI (see startUiInput).

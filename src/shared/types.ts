@@ -151,3 +151,14 @@ export interface NfcFixResult {
   ok: boolean
   message: string
 }
+
+/** What the controller layer needs from the system (see main/controllerSetup.ts). */
+export interface ControllerSetupStatus {
+  ok: boolean
+  /** python-evdev importable by the system python3 */
+  evdev: boolean
+  /** /dev/uinput writable */
+  uinput: boolean
+  /** every connected controller's device nodes readable and writable */
+  devices: boolean
+}

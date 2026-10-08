@@ -72,8 +72,11 @@ backends (`gogdl`, `legendary`, `nile`).
   **Gamepad** or **Keyboard (WASD) and Mouse** per game from the options menu (Y). Games
   without controller support default to WASD and Mouse. Works with generic pads (8BitDo,
   etc.) and the Steam Controller — both the 2026 model and the original — over hidraw, with
-  trackpads, back buttons and rumble. Needs `python3-evdev` and write access to
-  `/dev/uinput`.
+  trackpads, back buttons and rumble. Needs `python3-evdev` and access to `/dev/uinput` and
+  the controllers. If anything is missing (Bazzite/SteamOS have it all, most distros don't),
+  OmniLauncher offers to set it up once at startup — one admin password prompt that installs
+  `python3-evdev` with your package manager (dnf, apt, pacman, zypper, xbps, eopkg) and adds
+  a udev rule — and again from **Settings → Controllers → Set up**.
 
 - **Full controller support in the UI** — Xbox/PlayStation/generic pads and the Steam
   Controller drive the whole UI, including bumpers, cover-art picking and game options.
