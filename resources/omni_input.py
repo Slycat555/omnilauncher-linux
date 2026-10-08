@@ -2,9 +2,9 @@
 """OmniLauncher's own controller layer - what Steam Input does, without Steam.
 
 Takes over every physical controller (EVIOCGRAB, so the game never sees the raw device) and
-re-presents it as a standard Xbox 360 pad through uinput - the one layout every PC game and
-every SDL/Wine version understands. Or, in "kbm" mode, as a keyboard and mouse for games with
-no controller support.
+runs Steam Input's own templates on it - read from Steam's controller_base/templates - the
+"Gamepad" layout (a virtual Xbox 360 pad through uinput, plus the trackpad mouse) or, in
+"kbm" mode, "Keyboard (WASD) and Mouse", 1:1 with what Steam would do.
 
   * Generic gamepads (8BitDo, DualShock in DInput mode, ...): read through evdev and remapped
     with the same SDL mapping strings Steam stores (config.vdf SDL_GamepadBind), falling back
@@ -54,9 +54,16 @@ def log(*args):
     print('[omni-input]', *args, file=sys.stderr, flush=True)
 
 
+# Inputs only some controllers have - trackpads (touch/click/position), the four back
+# buttons, the "..." button and the triggers' full-pull click.
+EXTRA_BUTTONS = ('lpad_touch', 'lpad_click', 'rpad_touch', 'rpad_click', 'l4', 'r4', 'l5', 'r5',
+                 'qam', 'lt_click', 'rt_click')
+PAD_AXES = ('lpad_x', 'lpad_y', 'rpad_x', 'rpad_y')
+
+
 def blank_state():
-    s = {b: False for b in BUTTONS}
-    s.update({a: 0.0 for a in STICKS + TRIGGERS})
+    s = {b: False for b in BUTTONS + EXTRA_BUTTONS}
+    s.update({a: 0.0 for a in STICKS + TRIGGERS + PAD_AXES})
     return s
 
 
@@ -319,6 +326,282 @@ class TrackpadScroll:
         self.last = y
 
 
+
+# ---------------------------------------------------------------- Steam Input templates
+
+def parse_vdf(text):
+    """Valve's KeyValues text format, as a list of (key, value-or-list) pairs (keys repeat)."""
+    toks = re.findall(r'"((?:[^"\\]|\\.)*)"|([{}])', text)
+    pos = 0
+
+    def obj():
+        nonlocal pos
+        items = []
+        while pos < len(toks):
+            key, brace = toks[pos]
+            pos += 1
+            if brace == '}':
+                return items
+            if pos >= len(toks):
+                break
+            val, vbrace = toks[pos]
+            pos += 1
+            items.append((key, obj() if vbrace == '{' else val))
+        return items
+    return obj()
+
+
+def kv(items, key):
+    return [v for k, v in items if k == key]
+
+
+KEY_ALIASES = {
+    'ESCAPE': e.KEY_ESC, 'RETURN': e.KEY_ENTER, 'ENTER': e.KEY_ENTER,
+    'LEFT_SHIFT': e.KEY_LEFTSHIFT, 'RIGHT_SHIFT': e.KEY_RIGHTSHIFT,
+    'LEFT_CONTROL': e.KEY_LEFTCTRL, 'RIGHT_CONTROL': e.KEY_RIGHTCTRL,
+    'LEFT_ALT': e.KEY_LEFTALT, 'RIGHT_ALT': e.KEY_RIGHTALT,
+    'UP_ARROW': e.KEY_UP, 'DOWN_ARROW': e.KEY_DOWN, 'LEFT_ARROW': e.KEY_LEFT,
+    'RIGHT_ARROW': e.KEY_RIGHT, 'PAGE_UP': e.KEY_PAGEUP, 'PAGE_DOWN': e.KEY_PAGEDOWN,
+    'CAPSLOCK': e.KEY_CAPSLOCK, 'CAPS_LOCK': e.KEY_CAPSLOCK, 'PERIOD': e.KEY_DOT,
+    'FORWARD_SLASH': e.KEY_SLASH, 'BACK_SLASH': e.KEY_BACKSLASH, 'DASH': e.KEY_MINUS,
+    'EQUALS': e.KEY_EQUAL, 'SINGLE_QUOTE': e.KEY_APOSTROPHE, 'BACK_TICK': e.KEY_GRAVE,
+    'LEFT_BRACKET': e.KEY_LEFTBRACE, 'RIGHT_BRACKET': e.KEY_RIGHTBRACE,
+}
+MOUSE_BUTTONS = {'LEFT': e.BTN_LEFT, 'RIGHT': e.BTN_RIGHT, 'MIDDLE': e.BTN_MIDDLE,
+                 'BACK': e.BTN_SIDE, 'FORWARD': e.BTN_EXTRA}
+XINPUT = {'a': 'a', 'b': 'b', 'x': 'x', 'y': 'y', 'dpad_up': 'dpup', 'dpad_down': 'dpdown',
+          'dpad_left': 'dpleft', 'dpad_right': 'dpright', 'shoulder_left': 'leftshoulder',
+          'shoulder_right': 'rightshoulder', 'start': 'start', 'select': 'back',
+          'joystick_left': 'leftstick', 'joystick_right': 'rightstick', 'guide': 'guide',
+          'trigger_left': 'lefttrigger', 'trigger_right': 'righttrigger'}
+# Template "switches" inputs -> our state names.
+SWITCHES = {'button_escape': 'start', 'button_menu': 'back', 'left_bumper': 'leftshoulder',
+            'right_bumper': 'rightshoulder', 'button_back_left': 'l4',
+            'button_back_right': 'r4', 'button_back_left_upper': 'l5',
+            'button_back_right_upper': 'r5', 'button_capture': 'qam'}
+DIAMOND = {'button_a': 'a', 'button_b': 'b', 'button_x': 'x', 'button_y': 'y'}
+
+
+def key_code(name):
+    name = name.upper()
+    if name in KEY_ALIASES:
+        return KEY_ALIASES[name]
+    if name.startswith('KEYPAD_'):
+        return getattr(e, 'KEY_KP' + name[7:].replace('_', ''), None)
+    return getattr(e, 'KEY_' + name.replace('_', ''), None)
+
+
+def load_template(path):
+    """{'groups': {id: (mode, {input: [binding,...]}, settings)}, 'active': [(source, id)]}
+    from one of Steam's controller_base/templates/*.vdf files - only the bindings that
+    fire on a press (Full_Press / Soft_Press), which is all a default template uses."""
+    with open(path, encoding='utf-8', errors='replace') as f:
+        root = kv(parse_vdf(f.read()), 'controller_mappings')[0]
+    groups = {}
+    for g in kv(root, 'group'):
+        gid = kv(g, 'id')[0]
+        inputs = {}
+        for block in kv(g, 'inputs'):
+            for name, body in block:
+                binds = []
+                for acts in kv(body, 'activators'):
+                    for act, a in acts:
+                        if act not in ('Full_Press', 'Soft_Press'):
+                            continue
+                        for b in kv(a, 'bindings'):
+                            binds += [v.split(',')[0].strip() for k, v in b if k == 'binding']
+                inputs[name] = binds
+        settings = {k: v for s in kv(g, 'settings') for k, v in s}
+        groups[gid] = (kv(g, 'mode')[0], inputs, settings)
+    preset = kv(root, 'preset')[0]
+    active = []
+    for gsb in kv(preset, 'group_source_bindings'):
+        for gid, val in gsb:
+            parts = val.split()
+            if len(parts) >= 2 and parts[1] == 'active' and gid in groups:
+                active.append((parts[0], gid))
+    return {'groups': groups, 'active': active, 'title': (kv(root, 'title') or [''])[0]}
+
+
+def template_uses_xinput(tpl):
+    for mode, inputs, settings in (tpl['groups'][g] for _, g in tpl['active']):
+        if mode in ('joystick_move',) or (mode == 'trigger' and settings.get('output_trigger')):
+            return True
+        if any(b.startswith('xinput_button') for bs in inputs.values() for b in bs):
+            return True
+    return False
+
+
+class TemplateSink:
+    """Runs a Steam Input template against a controller's state - the same groups, modes and
+    bindings Steam uses, so "Gamepad" and "Keyboard (WASD) and Mouse" behave as they do in
+    Steam. Keyboard/mouse output goes to the shared Pointer; xinput output to a virtual
+    Xbox 360 pad (created only when the template has any)."""
+
+    STICK_DPAD_THRESHOLD = 0.45   # stick deflection that counts as a D-pad direction
+    PAD_DPAD_THRESHOLD = 0.25     # trackpad distance from center for a direction
+    MOUSE_PAD_SCALE = 0.012       # px per trackpad unit at sensitivity 100
+    JOYSTICK_MOUSE_SPEED = 2200.0  # px/s at full deflection, sensitivity 100
+
+    def __init__(self, tpl, pointer, rumble):
+        self.tpl = tpl
+        self.pointer = pointer
+        self.x360 = X360Sink(rumble) if template_uses_xinput(tpl) else None
+        self.state = blank_state()
+        self.pressed = set()     # bindings held down last frame
+        self.pad_last = {}       # group id -> last trackpad position (absolute_mouse)
+        self.mouse_sticks = []   # (x, y, sensitivity) of joystick_mouse groups this frame
+
+    def fileno(self):
+        return self.x360.fileno() if self.x360 else None
+
+    def handle_ff(self):
+        if self.x360:
+            self.x360.handle_ff()
+
+    @staticmethod
+    def source(s, name):
+        """(x, y, click, touch) of a template source."""
+        if name == 'joystick':
+            return s['leftx'], s['lefty'], s['leftstick'], True
+        if name == 'right_joystick':
+            return s['rightx'], s['righty'], s['rightstick'], True
+        if name in ('left_trackpad', 'right_trackpad'):
+            p = 'lpad' if name == 'left_trackpad' else 'rpad'
+            return s[p + '_x'], s[p + '_y'], s[p + '_click'], s[p + '_touch']
+        return 0.0, 0.0, False, False
+
+    def update(self, s):
+        self.state = s
+        now = set()
+        xs = blank_state()
+        self.mouse_sticks = []
+
+        def fire(binds):
+            now.update(binds)
+
+        for src, gid in self.tpl['active']:
+            mode, inputs, st = self.tpl['groups'][gid]
+            if mode in ('four_buttons', 'switches'):
+                table = DIAMOND if mode == 'four_buttons' else SWITCHES
+                for name, binds in inputs.items():
+                    if s.get(table.get(name, ''), False):
+                        fire(binds)
+            elif mode == 'single_button':
+                if self.source(s, src)[2]:
+                    fire(inputs.get('click', []))
+            elif mode == 'dpad':
+                if src == 'dpad':
+                    dirs = {'dpad_north': s['dpup'], 'dpad_south': s['dpdown'],
+                            'dpad_east': s['dpright'], 'dpad_west': s['dpleft']}
+                    click = False
+                else:
+                    x, y, click, touch = self.source(s, src)
+                    pad = src.endswith('trackpad')
+                    need_click = st.get('requires_click', '1' if pad else '0') == '1'
+                    live = touch and (click or not need_click)
+                    t = self.PAD_DPAD_THRESHOLD if pad else self.STICK_DPAD_THRESHOLD
+                    dirs = {'dpad_north': live and y < -t, 'dpad_south': live and y > t,
+                            'dpad_east': live and x > t, 'dpad_west': live and x < -t}
+                for name, on in dirs.items():
+                    if on:
+                        fire(inputs.get(name, []))
+                if click:
+                    fire(inputs.get('click', []))
+            elif mode == 'joystick_move':
+                x, y, click, touch = self.source(s, src)
+                out = st.get('output_joystick')
+                right = out == '1' if out in ('0', '1') else src.startswith('right')
+                inner = int(st.get('deadzone_inner_radius', '0')) / 32767.0
+                if touch and (x * x + y * y) ** 0.5 > inner:
+                    ax, ay = ('rightx', 'righty') if right else ('leftx', 'lefty')
+                    xs[ax], xs[ay] = x, y
+                if click:
+                    fire(inputs.get('click', []))
+            elif mode == 'trigger':
+                val = s['lefttrigger' if src == 'left_trigger' else 'righttrigger']
+                full = s['lt_click' if src == 'left_trigger' else 'rt_click'] or val >= 0.95
+                out = st.get('output_trigger')
+                if out == '1':
+                    xs['lefttrigger'] = max(xs['lefttrigger'], val)
+                elif out == '2':
+                    xs['righttrigger'] = max(xs['righttrigger'], val)
+                if full:
+                    fire(inputs.get('edge', []))
+                    fire(inputs.get('click', []))
+            elif mode == 'absolute_mouse':
+                x, y, click, touch = self.source(s, src)
+                sens = int(st.get('sensitivity', '100')) / 100.0
+                last = self.pad_last.get(gid)
+                if touch and last is not None:
+                    k = self.MOUSE_PAD_SCALE * sens * 32768
+                    self.pointer.move((x - last[0]) * k, (y - last[1]) * k)
+                self.pad_last[gid] = (x, y) if touch else None
+                if click:
+                    fire(inputs.get('click', []))
+            elif mode == 'joystick_mouse':
+                x, y, click, touch = self.source(s, src)
+                self.mouse_sticks.append((x, y, int(st.get('sensitivity', '100')) / 100.0))
+                if click:
+                    fire(inputs.get('click', []))
+            elif mode == 'scrollwheel':
+                pass  # not used by the default templates
+
+        # Apply: keyboard/mouse presses and releases, wheel notches on press, xinput state.
+        for b in sorted(now - self.pressed):
+            self.apply(b, True)
+        for b in sorted(self.pressed - now):
+            self.apply(b, False)
+        self.pressed = now
+        for b in now:
+            parts = b.split()
+            if len(parts) >= 2 and parts[0] == 'xinput_button':
+                target = XINPUT.get(parts[1].lower())
+                if target in TRIGGERS:
+                    xs[target] = 1.0
+                elif target:
+                    xs[target] = True
+        if self.x360:
+            self.x360.update(xs)
+        self.pointer.syn()
+
+    def apply(self, binding, down):
+        parts = binding.split()
+        if len(parts) < 2:
+            return
+        kind, arg = parts[0], parts[1]
+        if kind == 'key_press':
+            code = key_code(arg)
+            if code is not None:
+                self.pointer.key(code, down)
+        elif kind == 'mouse_button':
+            code = MOUSE_BUTTONS.get(arg.upper())
+            if code is not None:
+                self.pointer.key(code, down)
+        elif kind == 'mouse_wheel' and down:
+            self.pointer.wheel(1 if arg.upper() == 'SCROLL_UP' else -1)
+
+    def busy(self):
+        return any(deadzone(x, y, 0.1) != (0.0, 0.0) for x, y, _ in self.mouse_sticks)
+
+    def tick(self, dt):
+        """Joystick-mouse groups move the cursor continuously while the stick is held."""
+        for x, y, sens in self.mouse_sticks:
+            x, y = deadzone(x, y, 0.1)
+            if x or y:
+                speed = self.JOYSTICK_MOUSE_SPEED * sens * dt
+                # Squared response curve: precise near the center, fast at full tilt.
+                self.pointer.move(x * abs(x) * speed, y * abs(y) * speed)
+
+    def close(self):
+        for b in list(self.pressed):
+            self.apply(b, False)
+        self.pressed.clear()
+        self.pointer.syn()
+        if self.x360:
+            self.x360.close()
+
+
 # ---------------------------------------------------------------- SDL mappings
 
 def sdl_guid(info):
@@ -500,7 +783,7 @@ class EvdevPad:
         self.mapper = Mapper(mapping)
         self.ff_ids = {}
         dev.grab()
-        self.sink = make_sink(self.rumble)
+        self.sink = make_sink(self.rumble, 'generic')
 
     def norm(self, code, value):
         info = self.absinfo[code]
@@ -583,8 +866,11 @@ TRITON = {  # button bits of the new Steam Controller (SDL_hidapi_steam_triton.c
     'dpup': 0x2000, 'back': 0x4000, 'leftstick': 0x8000, 'guide': 0x10000,
     'leftshoulder': 0x80000,
 }
-TRITON_R_PAD_TOUCH, TRITON_R_PAD_CLICK = 0x200000, 0x400000
-TRITON_L_PAD_TOUCH, TRITON_L_PAD_CLICK = 0x2000000, 0x4000000
+TRITON_EXTRA = {  # the rest of its inputs, for templates
+    'qam': 0x10, 'r4': 0x80, 'r5': 0x100, 'l4': 0x20000, 'l5': 0x40000,
+    'rpad_touch': 0x200000, 'rpad_click': 0x400000, 'rt_click': 0x800000,
+    'lpad_touch': 0x2000000, 'lpad_click': 0x4000000, 'lt_click': 0x8000000,
+}
 
 
 class TritonPad:
@@ -598,13 +884,10 @@ class TritonPad:
         self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
         self.pointer = pointer
         self.make_sink = make_sink
-        self.sink = None if product in TRITON_DONGLES else make_sink(self.rumble)
-        self.mouse = TrackpadMouse(pointer)
-        self.scroll = TrackpadScroll(pointer)
+        self.sink = None if product in TRITON_DONGLES else make_sink(self.rumble, 'neptune')
         self.last_lizard = 0.0
         self.rumble_state = (0, 0, 0.0)  # left, right, stop-at (0 = until told)
         self.last_rumble = 0.0
-        self.pad_clicks = (False, False)
         self.set_lizard(False)
 
     def fileno(self):
@@ -631,13 +914,13 @@ class TritonPad:
             rid = data[0]
             if rid == 0x79 and len(data) > 1:  # dongle: controller connected / disconnected
                 if data[1] == 2 and not self.sink:
-                    self.sink = self.make_sink(self.rumble)
+                    self.sink = self.make_sink(self.rumble, 'neptune')
                 elif data[1] == 1 and self.sink:
                     self.sink.close()
                     self.sink = None
             elif rid in (0x42, 0x45, 0x47) and len(data) >= 30:
                 if not self.sink:
-                    self.sink = self.make_sink(self.rumble)
+                    self.sink = self.make_sink(self.rumble, 'neptune')
                 self.state(data, rid == 0x47)
 
     def state(self, d, timestamped):
@@ -646,21 +929,15 @@ class TritonPad:
         pads = 20 if timestamped else 18
         lpx, lpy, _lp, rpx, rpy = struct.unpack_from('<hhHhh', d, pads)
         s = blank_state()
-        for name, bit in TRITON.items():
+        for name, bit in list(TRITON.items()) + list(TRITON_EXTRA.items()):
             s[name] = bool(buttons & bit)
+        # Everything in screen orientation: x right, y down.
         s['leftx'], s['lefty'] = lx / 32768.0, -ly / 32768.0
         s['rightx'], s['righty'] = rx / 32768.0, -ry / 32768.0
         s['lefttrigger'], s['righttrigger'] = max(0, lt) / 32767.0, max(0, rt) / 32767.0
+        s['lpad_x'], s['lpad_y'] = lpx / 32768.0, -lpy / 32768.0
+        s['rpad_x'], s['rpad_y'] = rpx / 32768.0, -rpy / 32768.0
         self.sink.update(s)
-        # Trackpads are a mouse in both modes: right pad moves, left pad scrolls.
-        self.mouse.update(bool(buttons & TRITON_R_PAD_TOUCH), rpx, rpy)
-        self.scroll.update(bool(buttons & TRITON_L_PAD_TOUCH), lpy)
-        clicks = (bool(buttons & TRITON_R_PAD_CLICK), bool(buttons & TRITON_L_PAD_CLICK))
-        if clicks != self.pad_clicks:
-            self.pointer.key(e.BTN_LEFT, clicks[0])
-            self.pointer.key(e.BTN_RIGHT, clicks[1])
-            self.pointer.syn()
-            self.pad_clicks = clicks
 
     def rumble(self, strong, weak, length):
         stop = time.monotonic() + length / 1000.0 if (length and (strong or weak)) else 0.0
@@ -717,8 +994,7 @@ class LegacySteamPad:
         self.name = 'Steam Controller (2015)'
         self.fd = os.open(path, os.O_RDWR | os.O_NONBLOCK)
         self.make_sink = make_sink
-        self.sink = None if product == 0x1142 else make_sink(self.rumble)
-        self.scroll = TrackpadScroll(pointer)
+        self.sink = None if product == 0x1142 else make_sink(self.rumble, 'neptune')
         self.stick = (0, 0)
         self.pad = (0, 0)
         self.disable_lizard()
@@ -749,13 +1025,13 @@ class LegacySteamPad:
                 return
             if data[2] == 3 and len(data) > 4:  # wireless connect/disconnect event
                 if data[4] == 2 and not self.sink:
-                    self.sink = self.make_sink(self.rumble)
+                    self.sink = self.make_sink(self.rumble, 'neptune')
                 elif data[4] == 1 and self.sink:
                     self.sink.close()
                     self.sink = None
             elif data[2] == 1 and len(data) >= 24:
                 if not self.sink:
-                    self.sink = self.make_sink(self.rumble)
+                    self.sink = self.make_sink(self.rumble, 'neptune')
                 self.state(data)
 
     def state(self, d):
@@ -776,11 +1052,17 @@ class LegacySteamPad:
         for name, bit in LEGACY.items():
             s[name] = bool(buttons & bit)
         s['leftx'], s['lefty'] = self.stick[0] / 32768.0, -self.stick[1] / 32768.0
-        # No right stick on this model: the right pad stands in for it, like SDL does.
-        s['rightx'], s['righty'] = rx / 32768.0, -ry / 32768.0
         s['lefttrigger'], s['righttrigger'] = lt / 255.0, rt / 255.0
+        # No right stick on this model - templates bind its right trackpad instead.
+        s['rightstick'] = False
+        s['lpad_touch'] = bool(buttons & LEGACY_L_FINGER)
+        s['lpad_click'] = bool(buttons & LEGACY_L_CLICK)
+        s['lpad_x'], s['lpad_y'] = self.pad[0] / 32768.0, -self.pad[1] / 32768.0
+        s['rpad_touch'] = bool(buttons & LEGACY_R_FINGER)
+        s['rpad_click'] = bool(buttons & LEGACY['rightstick'])
+        s['rpad_x'], s['rpad_y'] = rx / 32768.0, -ry / 32768.0
+        s['l4'], s['r4'] = bool(buttons & 0x8000), bool(buttons & 0x10000)
         self.sink.update(s)
-        self.scroll.update(bool(buttons & LEGACY_L_FINGER), self.pad[1])
 
     def rumble(self, strong, weak, length):
         # ID_TRIGGER_HAPTIC_PULSE per side: on/off times in microseconds, repeat count.
@@ -810,31 +1092,71 @@ class Daemon:
         self.mode = mode
         self.only = only  # set of (vendor, product) to restrict to - for testing
         self.mappings = load_mappings(steam_root)
+        self.templates_dir = os.path.join(steam_root, 'controller_base', 'templates') if steam_root else None
+        self.templates = {}  # file name -> parsed template (or None if unreadable)
         self.sel = selectors.DefaultSelector()
         self.pointer = Pointer()
         self.drivers = {}   # key (evdev path or hidraw path) -> driver
         self.grabbed = {}   # Steam Controller keyboard/mouse evdev nodes we silence
         self.skip = set()   # paths that failed to open - not retried every scan
-        self.kbm_sinks = []
+        self.tick_sinks = []  # sinks that move the mouse on their own (joystick mouse)
         self.running = True
 
-    def make_sink(self, rumble):
-        if self.mode == 'kbm':
+    # Steam's own templates, as Steam picks them: the Deck/Steam Controller family gets
+    # "Gamepad with Mouse Trackpad", any other pad "Gamepad with Joystick Trackpad"; both get
+    # "Keyboard (WASD) and Mouse" for kbm.
+    TEMPLATE_FILES = {
+        ('neptune', 'gamepad'): 'controller_neptune_gamepad+mouse.vdf',
+        ('neptune', 'kbm'): 'controller_neptune_wasd.vdf',
+        ('generic', 'gamepad'): 'controller_generic_gamepad_joystick.vdf',
+        ('generic', 'kbm'): 'controller_generic_wasd.vdf',
+    }
+
+    def template(self, family):
+        name = self.TEMPLATE_FILES[(family, self.mode)]
+        if name not in self.templates:
+            tpl = None
+            if self.templates_dir:
+                try:
+                    tpl = load_template(os.path.join(self.templates_dir, name))
+                    log('template %s' % name)
+                except (OSError, IndexError, KeyError) as err:
+                    log('template %s unusable (%s) - built-in layout instead' % (name, err))
+            self.templates[name] = tpl
+        return self.templates[name]
+
+    def make_sink(self, rumble, family='generic'):
+        tpl = self.template(family)
+        if tpl:
+            sink = TemplateSink(tpl, self.pointer, rumble)
+        elif self.mode == 'kbm':
             sink = KbmSink(self.pointer)
-            self.kbm_sinks.append(sink)
-            return sink
-        sink = X360Sink(rumble)
-        self.sel.register(sink.fileno(), selectors.EVENT_READ, sink)
+        else:
+            sink = X360Sink(rumble)
+        if sink.fileno() is not None:
+            self.sel.register(sink.fileno(), selectors.EVENT_READ, sink)
+        if hasattr(sink, 'tick'):
+            self.tick_sinks.append(sink)
+        # A sink can be closed by its driver (a dongle's controller switched off) - take it
+        # out of the loop then too.
+        close = sink.close
+
+        def closing():
+            self.release_sink(sink)
+            close()
+        sink.close = closing
         return sink
 
     def release_sink(self, sink):
-        if sink in self.kbm_sinks:
-            self.kbm_sinks.remove(sink)
-        elif sink is not None:
-            try:
+        if sink is None:
+            return
+        if sink in self.tick_sinks:
+            self.tick_sinks.remove(sink)
+        try:
+            if sink.fileno() is not None:
                 self.sel.unregister(sink.fileno())
-            except (KeyError, ValueError):
-                pass
+        except (KeyError, ValueError):
+            pass
 
     def add(self, key, driver):
         self.drivers[key] = driver
@@ -929,7 +1251,7 @@ class Daemon:
         self.sel.register(sys.stdin.fileno(), selectors.EVENT_READ, 'stdin')
         last_scan = last_tick = time.monotonic()
         while self.running:
-            moving = any(s.busy() for s in self.kbm_sinks)
+            moving = any(s.busy() for s in self.tick_sinks)
             timeout = 0.008 if moving else 0.25
             for key, _ in self.sel.select(timeout):
                 obj = key.data
@@ -938,7 +1260,7 @@ class Daemon:
                         self.running = False
                     continue
                 try:
-                    if isinstance(obj, X360Sink):
+                    if isinstance(obj, (X360Sink, TemplateSink)):
                         obj.handle_ff()
                     else:
                         obj.handle()
@@ -952,7 +1274,7 @@ class Daemon:
                             self.remove(k)
                             self.skip.discard(k)
             now = time.monotonic()
-            for s in self.kbm_sinks:
+            for s in self.tick_sinks:
                 s.tick(now - last_tick)
             last_tick = now
             for d in self.drivers.values():

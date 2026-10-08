@@ -90,8 +90,10 @@ export function GameDetailsPanel(): React.JSX.Element | null {
 
   async function toggleInputMode(): Promise<void> {
     if (!gameId || !inputMode) return
-    const order: ControllerModeSetting[] = ['auto', 'gamepad', 'kbm']
-    const next = order[(order.indexOf(inputMode.setting) + 1) % order.length]
+    // Two choices, like Steam's: Gamepad or Keyboard (WASD) and Mouse. A game nobody chose
+    // for yet shows (and runs with) the one matching its controller support.
+    const current = inputMode.setting === 'auto' ? inputMode.detected : inputMode.setting
+    const next: ControllerModeSetting = current === 'gamepad' ? 'kbm' : 'gamepad'
     await window.api.setControllerMode(gameId, next)
     setInputMode({ ...inputMode, setting: next })
   }
@@ -280,26 +282,20 @@ export function GameDetailsPanel(): React.JSX.Element | null {
                   <span>Controller</span>
                 </div>
                 <p className="details-section-hint">
-                  {inputMode.setting === 'auto'
-                    ? inputMode.supported === false
-                      ? 'This game has no controller support, so your controller works as keyboard and mouse.'
-                      : inputMode.supported
-                        ? 'This game supports controllers, so it sees an Xbox controller.'
-                        : 'Controller support unknown - the game sees an Xbox controller.'
-                    : inputMode.setting === 'gamepad'
-                      ? 'Your controller appears to the game as an Xbox controller.'
-                      : 'Sticks, buttons and triggers act as keyboard and mouse.'}
+                  {(inputMode.setting === 'auto' ? inputMode.detected : inputMode.setting) ===
+                  'gamepad'
+                    ? 'Steam Input\'s Gamepad layout - the game sees an Xbox controller.'
+                    : 'Steam Input\'s Keyboard (WASD) and Mouse layout - for games without controller support.'}
                 </p>
                 <button
                   className={`proton-select${isFocused('input')}`}
                   onClick={() => void toggleInputMode()}
                 >
                   <span className="proton-select-value">
-                    {inputMode.setting === 'auto'
-                      ? `Automatic (${inputMode.detected === 'kbm' ? 'keyboard & mouse' : 'Xbox controller'})`
-                      : inputMode.setting === 'gamepad'
-                        ? 'Xbox controller'
-                        : 'Keyboard & mouse'}
+                    {(inputMode.setting === 'auto' ? inputMode.detected : inputMode.setting) ===
+                    'gamepad'
+                      ? 'Gamepad'
+                      : 'Keyboard (WASD) and Mouse'}
                   </span>
                   <span className="proton-select-arrow">⇄</span>
                 </button>
