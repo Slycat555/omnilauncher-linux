@@ -82,6 +82,10 @@ export interface CompatInfo {
   options: { id: string; label: string }[]
 }
 
+/** How OmniLauncher's own controller layer presents controllers to a non-Steam game:
+ *  as an Xbox 360 pad, or as keyboard + mouse for games with no controller support. */
+export type ControllerMode = 'gamepad' | 'kbm'
+
 export type ClientVariant = 'native' | 'flatpak' | null
 
 export interface ClientStatus {

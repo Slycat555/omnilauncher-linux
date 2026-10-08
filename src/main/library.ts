@@ -7,6 +7,7 @@ import { readSteamLibrary } from './clients/steam'
 import { libraryCacheFilePath } from './paths'
 import { isRunning } from './launchManager'
 import { installManager } from './installManager'
+import { filterSteamGames } from './steamFilter'
 
 let steamDetCache: SteamDetection | null = null
 let heroicDetCache: HeroicDetection | null = null
@@ -34,11 +35,13 @@ export async function refreshLibrary(): Promise<LibraryRefreshResult> {
     readSteamLibrary(steam, { apiKey: settings.steamWebApiKey, steamId64: settings.steamId64 }),
     readHeroicLibrary(heroic)
   ])
-  const games = [...steamResult.games, ...heroicGames].map((g) => ({
-    ...g,
-    isInstalling: installManager.isBusy(g.id),
-    canLaunch: g.canLaunch && !isRunning(g.id)
-  }))
+  const games = await filterSteamGames(
+    [...steamResult.games, ...heroicGames].map((g) => ({
+      ...g,
+      isInstalling: installManager.isBusy(g.id),
+      canLaunch: g.canLaunch && !isRunning(g.id)
+    }))
+  )
   persistCache(games)
   const warnings = steamResult.warning ? [steamResult.warning] : []
   return { games, warnings }

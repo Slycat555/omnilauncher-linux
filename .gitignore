@@ -8,3 +8,4 @@ out
 flatpak/.flatpak-builder
 flatpak/build-dir
 flatpak/repo
+__pycache__/

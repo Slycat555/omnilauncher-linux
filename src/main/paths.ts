@@ -12,12 +12,12 @@ export function existsOrNull(p: string): string | null {
   return existsSync(p) ? p : null
 }
 
-/** ~/.config/omnilauncher-linux (kept separate from Electron's userData so it's easy to find) */
+/** ~/.config/omnilauncher-test (kept separate from Electron's userData so it's easy to find) */
 export function appConfigDir(): string {
-  return join(homedir(), '.config', 'omnilauncher-linux')
+  return join(homedir(), '.config', 'omnilauncher-test')
 }
 
-/** Kept under the same visible ~/.config/omnilauncher-linux tree as everything else, not
+/** Kept under the same visible ~/.config/omnilauncher-test tree as everything else, not
  *  Electron's internal userData cache, so downloaded art is easy for the user to find. */
 export function coversCacheDir(): string {
   return join(appConfigDir(), 'covers')

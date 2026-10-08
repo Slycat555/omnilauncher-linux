@@ -16,6 +16,7 @@ import {
   disarmSteamWindowSuppression,
   isSteamGameRunning,
   launchSteamGame,
+  shutdownSteam,
   startSteamSilently
 } from './clients/steam'
 import {
@@ -33,6 +34,7 @@ import { gamescopeArgs, inGamescopeSession, withGamescope } from './gamescope'
 import { appConfigDir } from './paths'
 import { addPlaySession } from './playtime'
 import { hostEnv } from './hostEnv'
+import { getControllerMode, omniInputGameEnv, startOmniInput } from './omniInput'
 
 export interface RuntimeContext {
   steam: SteamDetection
@@ -109,15 +111,17 @@ export async function launchGame(
     return
   }
 
-  // GOG games go through Steam as non-Steam shortcuts, so they get Steam Input like Steam
-  // games do (Steam only applies it to games it launches). Falls back to launching umu
-  // directly when Steam or its API isn't reachable.
-  if (game.store === 'gog' && builder.bin === 'python3') {
-    const shortcut = await gogSteamShortcut(game, builder, ctx, gamescope)
-    if (shortcut) {
-      await runThroughSteam(game, ctx, onState, shortcut.gameId, String(shortcut.appId))
-      return
-    }
+  // Test build: no Steam for non-Steam games. Steam is closed for the session (it would
+  // grab the controllers too) and OmniLauncher's own controller layer stands in for Steam
+  // Input; Steam comes back in the background, silently, once the game exits.
+  const steamWasClosed = await shutdownSteam(ctx.steam)
+  const input = await startOmniInput(getControllerMode(game.id), ctx.steam.root)
+  let cleanedUp = false
+  const afterGame = (): void => {
+    if (cleanedUp) return
+    cleanedUp = true
+    input?.stop()
+    if (steamWasClosed) startSteamSilently(ctx.steam)
   }
 
   const startedAt = Date.now()
@@ -128,7 +132,11 @@ export async function launchGame(
   const child = spawn(bin, args, {
     // OMNILAUNCHER_GAME_ID is inherited down through Wine/Proton by the game itself - the
     // Wine monitor (wineMonitor.ts) uses it to recognise a real game launched from here.
-    env: hostEnv({ ...builder.env, OMNILAUNCHER_GAME_ID: game.id }),
+    env: hostEnv({
+      ...builder.env,
+      ...(input ? omniInputGameEnv(input) : {}),
+      OMNILAUNCHER_GAME_ID: game.id
+    }),
     detached: true
   })
 
@@ -141,11 +149,13 @@ export async function launchGame(
   })
 
   child.on('error', (err) => {
+    afterGame()
     runningIds.delete(game.id)
     onState({ gameId: game.id, running: false, error: err.message })
   })
 
   child.on('close', (code) => {
+    afterGame()
     runningIds.delete(game.id)
     const minutes = Math.round((Date.now() - startedAt) / 60000)
     addPlaySession(game.id, minutes)

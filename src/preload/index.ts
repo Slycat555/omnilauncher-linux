@@ -3,6 +3,7 @@ import { electronAPI } from '@electron-toolkit/preload'
 import type {
   AppSettings,
   CompatInfo,
+  ControllerMode,
   CoverOption,
   DetectionResult,
   InstallProgressEvent,
@@ -43,6 +44,10 @@ const api = {
   getCompat: (gameId: string): Promise<CompatInfo> => ipcRenderer.invoke('compat:get', gameId),
   setCompat: (gameId: string, toolId: string): Promise<void> =>
     ipcRenderer.invoke('compat:set', gameId, toolId),
+  getControllerMode: (gameId: string): Promise<ControllerMode | null> =>
+    ipcRenderer.invoke('input:getMode', gameId),
+  setControllerMode: (gameId: string, mode: ControllerMode): Promise<void> =>
+    ipcRenderer.invoke('input:setMode', gameId, mode),
   cancelInstall: (gameId: string): Promise<void> =>
     ipcRenderer.invoke('game:cancelInstall', gameId),
   uninstallGame: (gameId: string): Promise<void> => ipcRenderer.invoke('game:uninstall', gameId),

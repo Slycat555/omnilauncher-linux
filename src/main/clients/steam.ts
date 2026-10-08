@@ -633,6 +633,21 @@ export function startSteamSilently(det: SteamDetection): boolean {
   return true
 }
 
+/** Asks Steam to quit and waits (up to `timeoutMs`) for it to be gone. A GOG game runs
+ *  with OmniLauncher's own controller layer instead of Steam Input, and a running Steam
+ *  would otherwise grab the same controllers (and its virtual pads) out from under it. */
+export async function shutdownSteam(det: SteamDetection, timeoutMs = 20000): Promise<boolean> {
+  if (!det.execCommand || !isSteamRunning(det.variant)) return false
+  const quit = steamArgv(det.execCommand, ['-shutdown'])
+  spawnDetached(quit.cmd, quit.args)
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await sleep(500)
+    if (!isSteamRunning(det.variant)) return true
+  }
+  return !isSteamRunning(det.variant)
+}
+
 export function launchSteamGame(det: SteamDetection, appId: string): void {
   if (!det.execCommand) return
   steamUri(det.execCommand, det.variant, `steam://rungameid/${appId}`)

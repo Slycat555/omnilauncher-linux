@@ -1,6 +1,7 @@
 import { BrowserWindow, ipcMain, shell } from 'electron'
 import type {
   CompatInfo,
+  ControllerMode,
   InstallProgressEvent,
   LaunchStateEvent,
   SettingsPatch,
@@ -35,6 +36,7 @@ import {
   syncGamescopeLaunchOptions,
   type RuntimeContext as LaunchCtx
 } from './launchManager'
+import { getControllerMode, setControllerMode } from './omniInput'
 import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } from './library'
 import { isNfcAvailable, startNfcWatcher, writeGameToTag } from './nfcManager'
 import { fixNfcPermissions } from './clients/nfcPermissionFix'
@@ -210,6 +212,19 @@ export function registerIpcHandlers(): void {
         ...listProtonBuilds(steam.root).map((b) => ({ id: b.name, label: b.name }))
       ]
     }
+  })
+
+  // The controller layer only runs for games launched without Steam - Steam games keep
+  // Steam Input.
+  safeHandle('input:getMode', async (_e, gameId: string): Promise<ControllerMode | null> => {
+    const game = gameIndex.get(gameId)
+    if (!game || game.store === 'steam') return null
+    return getControllerMode(gameId)
+  })
+
+  safeHandle('input:setMode', async (_e, gameId: string, mode: ControllerMode) => {
+    if (mode !== 'gamepad' && mode !== 'kbm') throw new Error('Unknown controller mode')
+    setControllerMode(gameId, mode)
   })
 
   safeHandle('compat:set', async (_e, gameId: string, toolId: string) => {

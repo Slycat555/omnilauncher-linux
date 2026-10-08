@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import type { CompatInfo } from '../../../shared/types'
+import type { CompatInfo, ControllerMode } from '../../../shared/types'
 import { useAppStore } from '../store'
 import { useModalNav } from '../useModalNav'
-import { DownloadIcon, ImageIcon, NfcIcon, SettingsIcon, StopIcon, TrashIcon, XIcon } from './Icons'
+import { DownloadIcon, GamepadIcon, ImageIcon, NfcIcon, SettingsIcon, StopIcon, TrashIcon, XIcon } from './Icons'
 
 interface Item {
   key: string
@@ -35,6 +35,8 @@ export function GameDetailsPanel(): React.JSX.Element | null {
   const [compatError, setCompatError] = useState<string | null>(null)
   // The Proton choice is a compact dropdown: one row until opened.
   const [protonOpen, setProtonOpen] = useState(false)
+  // OmniLauncher's own controller layer - null for Steam games, which keep Steam Input.
+  const [inputMode, setInputMode] = useState<ControllerMode | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -44,7 +46,11 @@ export function GameDetailsPanel(): React.JSX.Element | null {
     setCompat(null)
     setCompatError(null)
     setProtonOpen(false)
+    setInputMode(null)
     if (gameId) void window.api.getCompat(gameId).then(setCompat, () => setCompat(null))
+    if (gameId) {
+      void window.api.getControllerMode(gameId).then(setInputMode, () => setInputMode(null))
+    }
   }, [gameId])
 
   const game = games.find((g) => g.id === gameId)
@@ -73,6 +79,13 @@ export function GameDetailsPanel(): React.JSX.Element | null {
     }
   }
 
+  async function toggleInputMode(): Promise<void> {
+    if (!gameId || !inputMode) return
+    const next: ControllerMode = inputMode === 'gamepad' ? 'kbm' : 'gamepad'
+    await window.api.setControllerMode(gameId, next)
+    setInputMode(next)
+  }
+
   function installAction(): void {
     if (!game) return
     if (game.isInstalling) void cancelInstall(game.id)
@@ -95,6 +108,9 @@ export function GameDetailsPanel(): React.JSX.Element | null {
   }
   if (compat?.supported) {
     items.push({ key: 'proton', run: () => setProtonOpen(true) })
+  }
+  if (inputMode) {
+    items.push({ key: 'input', run: () => void toggleInputMode() })
   }
   items.push({
     key: 'cover',
@@ -240,6 +256,33 @@ export function GameDetailsPanel(): React.JSX.Element | null {
                     ))}
                   </div>
                 )}
+              </div>
+            </div>
+          )}
+
+          {inputMode && (
+            <div className="details-section-row">
+              <div className="details-preview-tile details-preview-tile-empty">
+                <GamepadIcon size={22} />
+              </div>
+              <div className="details-section-main">
+                <div className="details-section-header">
+                  <span>Controller</span>
+                </div>
+                <p className="details-section-hint">
+                  {inputMode === 'gamepad'
+                    ? 'Your controller appears to the game as an Xbox controller.'
+                    : 'Sticks, buttons and triggers act as keyboard and mouse - for games without controller support.'}
+                </p>
+                <button
+                  className={`proton-select${isFocused('input')}`}
+                  onClick={() => void toggleInputMode()}
+                >
+                  <span className="proton-select-value">
+                    {inputMode === 'gamepad' ? 'Xbox controller' : 'Keyboard & mouse'}
+                  </span>
+                  <span className="proton-select-arrow">⇄</span>
+                </button>
               </div>
             </div>
           )}

@@ -114,6 +114,17 @@ export const ImageIcon = ({ size }: IconProps): React.JSX.Element =>
     size
   )
 
+export const GamepadIcon = ({ size }: IconProps): React.JSX.Element =>
+  base(
+    <>
+      <path d="M6 11h4M8 9v4" />
+      <circle cx="15.5" cy="12" r="0.5" />
+      <circle cx="18" cy="10" r="0.5" />
+      <path d="M17.3 5H6.7a4 4 0 0 0-3.96 3.43l-.71 5A4 4 0 0 0 6 18c1 0 2-.5 2.6-1.3L10 15h4l1.4 1.7A3.4 3.4 0 0 0 18 18a4 4 0 0 0 3.97-4.57l-.71-5A4 4 0 0 0 17.3 5z" />
+    </>,
+    size
+  )
+
 export const NfcIcon = ({ size }: IconProps): React.JSX.Element =>
   base(
     <>
