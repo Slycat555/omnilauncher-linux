@@ -28,7 +28,13 @@ import { gamescopeArgs, inGamescopeSession, withGamescope } from './gamescope'
 import { appConfigDir } from './paths'
 import { addPlaySession } from './playtime'
 import { detectControllerMode } from './controllerSupport'
-import { getControllerMode, omniInputGameEnv, startOmniInput } from './omniInput'
+import {
+  getControllerMode,
+  omniInputGameEnv,
+  pauseUiInput,
+  resumeUiInput,
+  startOmniInput
+} from './omniInput'
 
 export interface RuntimeContext {
   steam: SteamDetection
@@ -56,6 +62,18 @@ export async function launchGame(
   // was happening. This is exactly the same "reported before dispatch" reasoning already
   // used for arming Steam's window suppression right below.
   runningIds.add(game.id)
+  // OmniLauncher's own UI controller layer hands the controllers over for the game, and
+  // gets them back once the launch ends either way.
+  await pauseUiInput()
+  let resumed = false
+  const reportState = onState
+  onState = (evt) => {
+    if (!evt.running && !resumed) {
+      resumed = true
+      resumeUiInput()
+    }
+    reportState(evt)
+  }
   onState({ gameId: game.id, running: true })
 
   // Like the Steam Deck: games get gamescope from the session in Game Mode, and run without

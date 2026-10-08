@@ -261,7 +261,7 @@ export async function readSteamLibrary(
  *  spawn a redundant second Steam invocation and then sit through an unnecessary extra
  *  ~4s delay before forwarding the real action, every single time, whether or not Steam
  *  needed starting at all. */
-function isSteamRunning(variant: SteamDetection['variant']): boolean {
+export function isSteamRunning(variant: SteamDetection['variant']): boolean {
   try {
     const steamHome =
       variant === 'flatpak' ? join(homedir(), '.var', 'app', STEAM_FLATPAK_ID) : homedir()

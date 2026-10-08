@@ -17,7 +17,8 @@ export interface OmniInputSession {
    *  game must not open directly, or it would see every controller twice. */
   ignore: string
   devices: string[]
-  stop: () => void
+  /** Hands the controllers back; resolves once the layer has exited. */
+  stop: () => Promise<void>
 }
 
 function scriptPath(): string {
@@ -48,11 +49,13 @@ export function startOmniInput(
       return
     }
     let settled = false
-    const stop = (): void => {
+    const exited = new Promise<void>((r) => child.once('exit', () => r()))
+    const stop = (): Promise<void> => {
       child.stdin?.end()
       setTimeout(() => {
         if (child.exitCode === null) child.kill('SIGTERM')
       }, 2000)
+      return child.exitCode !== null ? Promise.resolve() : exited
     }
     const done = (session: OmniInputSession | null): void => {
       if (settled) return
@@ -119,4 +122,56 @@ export function setControllerMode(gameId: string, setting: ControllerModeSetting
   if (setting === 'auto') delete modes[gameId]
   else modes[gameId] = setting
   writeFileSync(modesFile(), JSON.stringify(modes, null, 2))
+}
+
+// ---------- in the launcher's own UI ----------
+
+/**
+ * The controller layer also runs while OmniLauncher itself is in use (gamepad mode), so a
+ * Steam Controller reaches the UI as a standard pad - bumpers, triggers and all - instead of
+ * depending on Steam's Desktop Layout keys, which only exist while Steam runs. It steps
+ * aside while a game is launching/running (that game's own session takes over) and while
+ * Steam runs (Steam drives the controllers then).
+ */
+let uiSession: OmniInputSession | null = null
+let uiStarting: Promise<void> | null = null
+let gamesActive = 0
+
+async function syncUiInput(steamRoot: string | null, steamRunning: () => boolean): Promise<void> {
+  if (uiStarting) return
+  const want = gamesActive === 0 && !steamRunning()
+  if (want && !uiSession) {
+    uiStarting = (async () => {
+      const session = await startOmniInput('gamepad', steamRoot)
+      if (session && (gamesActive > 0 || steamRunning())) await session.stop()
+      else uiSession = session
+    })()
+    await uiStarting
+    uiStarting = null
+  } else if (!want && uiSession) {
+    const s = uiSession
+    uiSession = null
+    await s.stop()
+  }
+}
+
+export function startUiInput(steamRoot: string | null, steamRunning: () => boolean): void {
+  void syncUiInput(steamRoot, steamRunning)
+  setInterval(() => void syncUiInput(steamRoot, steamRunning), 3000)
+}
+
+/** Before a game launches: frees the controllers (resolves once they are). */
+export async function pauseUiInput(): Promise<void> {
+  gamesActive++
+  if (uiStarting) await uiStarting
+  if (uiSession) {
+    const s = uiSession
+    uiSession = null
+    await s.stop()
+  }
+}
+
+/** After that game is gone - the next sync brings the UI layer back. */
+export function resumeUiInput(): void {
+  gamesActive = Math.max(0, gamesActive - 1)
 }

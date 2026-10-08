@@ -38,7 +38,8 @@ import {
   type RuntimeContext as LaunchCtx
 } from './launchManager'
 import { detectControllerMode } from './controllerSupport'
-import { getControllerMode, setControllerMode } from './omniInput'
+import { getControllerMode, setControllerMode, startUiInput } from './omniInput'
+import { isSteamRunning } from './clients/steam'
 import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } from './library'
 import { isNfcAvailable, startNfcWatcher, writeGameToTag } from './nfcManager'
 import { fixNfcPermissions } from './clients/nfcPermissionFix'
@@ -388,6 +389,11 @@ export function registerIpcHandlers(): void {
         onProgress: (evt) => broadcast('install:progress', evt)
       })
     )
+    .catch(() => {})
+
+  // The controller layer for OmniLauncher's own UI (see startUiInput).
+  void getRuntimeDetections()
+    .then(({ steam }) => startUiInput(steam.root, () => isSteamRunning(steam.variant)))
     .catch(() => {})
 
   safeHandle('wine:getActivity', async () => getWineActivity())
