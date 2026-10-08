@@ -93,7 +93,7 @@ export async function launchGame(
 }
 
 /**
- * Test build: a GOG/Epic/Amazon game is launched by Heroic itself, headless (heroic://
+ * A GOG/Epic/Amazon game is launched by Heroic itself, headless (heroic://
  * launch with --no-gui), and never touches Steam. OmniLauncher's own controller layer
  * (omniInput.ts) stands in for Steam Input for the session; Steam, if a Steam game left it
  * running, is closed first so it can't grab the same controllers.
@@ -201,7 +201,7 @@ async function runThroughSteam(
   // milliseconds of the URI being handed to Steam, so suppression needs to already be
   // watching, not scrambling to start up in reaction to it.
   armSteamWindowSuppression()
-  // Test build: Steam isn't started with OmniLauncher - only now, for a Steam game.
+  // Steam isn't started with OmniLauncher - only now, for a Steam game.
   if (startSteamSilently(ctx.steam)) await waitForSteamCef(120000)
   // Steam is headless, so a pre-launch question (EULA, notice, launch option...) would
   // otherwise wait forever on a dialog nobody can see - have Steam answer it itself.

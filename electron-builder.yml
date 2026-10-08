@@ -1,5 +1,5 @@
-appId: com.omnilauncher.test
-productName: OmniLauncher Test
+appId: com.omnilauncher.linux
+productName: OmniLauncher
 directories:
   buildResources: build
 files:
@@ -13,7 +13,7 @@ asarUnpack:
   - resources/**
   - '**/*.node'
 win:
-  executableName: omnilauncher-test
+  executableName: omnilauncher-linux
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

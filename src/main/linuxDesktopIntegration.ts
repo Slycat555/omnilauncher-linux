@@ -23,21 +23,21 @@ export function installLinuxDesktopEntry(): void {
   const dataHome = process.env.XDG_DATA_HOME || join(app.getPath('home'), '.local', 'share')
   const desktopDir = join(dataHome, 'applications')
   const iconDir = join(dataHome, 'omnilauncher') // not a themed icons/ dir - see below
-  const desktopPath = join(desktopDir, 'omnilauncher-test.desktop')
-  const iconPath = join(iconDir, 'omnilauncher-test.png')
+  const desktopPath = join(desktopDir, 'omnilauncher-linux.desktop')
+  const iconPath = join(iconDir, 'omnilauncher-linux.png')
 
   // Icon= by theme name only resolves after a gtk-update-icon-cache refresh, which
   // nothing here triggers - that's what made the taskbar icon show up blank/broken.
   // An absolute path bypasses icon-theme/cache lookup entirely and every DE honors it
   // directly, at the cost of not respecting the user's icon theme (acceptable here).
   const desktopEntry = `[Desktop Entry]
-Name=OmniLauncher Test
+Name=OmniLauncher
 Comment=Unified game launcher for Steam and Heroic (GOG/Epic/Amazon)
 Exec=${appImagePath} --no-sandbox %U
 Terminal=false
 Type=Application
 Icon=${iconPath}
-StartupWMClass=omnilauncher-test
+StartupWMClass=omnilauncher-linux
 Categories=Game;
 `
 

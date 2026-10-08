@@ -356,7 +356,7 @@ export function registerIpcHandlers(): void {
     (message) => broadcast('app:warning', message)
   )
 
-  // Test build: Steam is only for Steam games - it isn't started with OmniLauncher, only
+  // Steam is only for Steam games - it isn't started with OmniLauncher, only
   // when a Steam game is installed or played (both start it on demand). If it happens to
   // be running already, its settings are brought in line the same as before.
   void getRuntimeDetections()

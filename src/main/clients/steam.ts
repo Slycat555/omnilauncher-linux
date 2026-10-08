@@ -841,7 +841,7 @@ export async function uninstallSteamGame(det: SteamDetection, appId: string): Pr
   // the manifest disappears - that bit is the real "confirmed" signal that was missing,
   // not a guessed delay, so it's safe to close the window on exactly like install does.
   // No dialog: Steam's own "Uninstall" confirmation call via its API, when reachable.
-  // Test build: Steam may not be running (it's only started for Steam games) - start it
+  // Steam may not be running (it's only started for Steam games) - start it
   // headless and wait for its API rather than falling back to steam://uninstall, which
   // shows Steam's confirmation dialog.
   if (startSteamSilently(det)) await waitForSteamCef(120000)
