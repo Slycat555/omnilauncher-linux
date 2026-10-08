@@ -15,7 +15,11 @@ const execFileP = promisify(execFile)
  *  - python-evdev, which the layer is written against;
  *  - write access to /dev/uinput, for the virtual pad it presents;
  *  - read/write access to the controllers themselves (evdev + hidraw - the Steam
- *    Controller is driven over hidraw).
+ *    Controller is driven over hidraw);
+ *  - a kernel driver for Xbox-protocol pads (xpad) - Xbox controllers and most third-party
+ *    ones in X-input mode (8BitDo etc.) have no gamepad device at all without it, only the
+ *    keyboard/mouse interfaces some of them add. Fedora-based distros (Fedora, Ultramarine,
+ *    Nobara...) ship it in kernel-modules-extra, which isn't installed by default.
  * Access comes from logind's uaccess ACLs. Distros' steam-devices packages carry the
  * rules, but they only reach devices that appear after the package was installed (or a
  * udevadm trigger) - so a Steam installed in this boot leaves the controller root-only.
@@ -86,6 +90,26 @@ function controllerNodes(): string[] {
   return nodes.filter((n) => existsSync(n))
 }
 
+/** USB interfaces speaking the Xbox 360 (vendor class ff, subclass 5d) or Xbox One (GIP,
+ *  subclass 47) protocol that no driver has claimed - an Xbox-style pad xpad should
+ *  drive but can't. */
+function unboundXboxInterfaces(): string[] {
+  const found: string[] = []
+  try {
+    for (const name of readdirSync('/sys/bus/usb/devices')) {
+      if (!name.includes(':')) continue
+      const dir = join('/sys/bus/usb/devices', name)
+      const cls = readText(join(dir, 'bInterfaceClass')).trim()
+      const sub = readText(join(dir, 'bInterfaceSubClass')).trim()
+      if (cls !== 'ff' || (sub !== '5d' && sub !== '47')) continue
+      if (!existsSync(join(dir, 'driver'))) found.push(name)
+    }
+  } catch {
+    // no usb sysfs
+  }
+  return found
+}
+
 async function hasEvdev(): Promise<boolean> {
   try {
     await execFileP('python3', ['-I', '-c', 'import evdev'], { env: hostEnv() })
@@ -101,9 +125,10 @@ export async function controllerSetupStatus(): Promise<ControllerSetupStatus> {
     evdev: await hasEvdev(),
     uinput: canReadWrite('/dev/uinput'),
     devices: blocked.length === 0,
+    xpad: unboundXboxInterfaces().length === 0,
     ok: false
   }
-  status.ok = status.evdev && status.uinput && status.devices
+  status.ok = status.evdev && status.uinput && status.devices && status.xpad
   return status
 }
 
@@ -140,6 +165,13 @@ export async function fixControllerSetup(): Promise<NfcFixResult> {
       }
     }
     if (installer) steps.push(installer)
+  }
+  if (!before.xpad) {
+    // Loaded if the running kernel has it; otherwise installed where it's packaged
+    // separately (Fedora family). Installing it can pull in a newer kernel than the one
+    // running, whose module only loads after a reboot - so a failed modprobe isn't fatal.
+    const extra = (await which('dnf')) ? 'dnf install -y kernel-modules-extra; ' : ''
+    steps.push(`{ modprobe xpad 2>/dev/null || { ${extra}modprobe xpad 2>/dev/null || true; }; }`)
   }
   if (!before.uinput || !before.devices) {
     const tmpPath = join(tmpdir(), 'omnilauncher-controllers.rules')
@@ -193,23 +225,40 @@ export async function fixControllerSetup(): Promise<NfcFixResult> {
         : "Install your distro's python3-evdev (or python-evdev) package."
     }
   }
+  if (!after.xpad) {
+    return {
+      ok: false,
+      message:
+        'Installed the Xbox controller driver (xpad) - restart your computer to finish, ' +
+        'then the controller will work.'
+    }
+  }
   return {
     ok: false,
     message: 'Applied the fix, but this system needs a reboot (or replugging the controller) first.'
   }
 }
 
-/** The automatic fix is offered once at startup; if it's declined, it isn't asked again
- *  (Settings still has the button). */
+/** The automatic fix is offered once per problem at startup; once declined it isn't
+ *  asked again for that problem (Settings still has the button), but a new one - e.g. a
+ *  newly connected Xbox-style pad with no driver - is offered. */
 function promptedFile(): string {
-  return join(appConfigDir(), 'controller-setup-prompted')
+  return join(appConfigDir(), 'controller-setup-prompted.json')
 }
 
 export async function autoFixControllerSetup(): Promise<NfcFixResult | null> {
   const status = await controllerSetupStatus()
-  if (status.ok || existsSync(promptedFile())) return null
+  if (status.ok) return null
+  const missing = (['evdev', 'uinput', 'devices', 'xpad'] as const).filter((k) => !status[k])
+  let prompted: string[] = []
   try {
-    writeFileSync(promptedFile(), '')
+    prompted = JSON.parse(readFileSync(promptedFile(), 'utf-8')) as string[]
+  } catch {
+    // never prompted
+  }
+  if (missing.every((k) => prompted.includes(k))) return null
+  try {
+    writeFileSync(promptedFile(), JSON.stringify([...new Set([...prompted, ...missing])]))
   } catch {
     // still try once
   }

@@ -161,4 +161,6 @@ export interface ControllerSetupStatus {
   uinput: boolean
   /** every connected controller's device nodes readable and writable */
   devices: boolean
+  /** every Xbox-protocol pad has a driver (xpad) */
+  xpad: boolean
 }

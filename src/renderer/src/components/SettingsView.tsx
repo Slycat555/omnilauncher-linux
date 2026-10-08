@@ -112,7 +112,8 @@ function ControllerSetupRow(): React.JSX.Element {
     ? [
         !status.evdev && 'python-evdev is not installed',
         !status.uinput && "can't create the virtual controller (/dev/uinput)",
-        !status.devices && "can't open the connected controller"
+        !status.devices && "can't open the connected controller",
+        !status.xpad && 'no driver for the Xbox-style controller (xpad)'
       ].filter(Boolean)
     : []
 
@@ -138,7 +139,7 @@ function ControllerSetupRow(): React.JSX.Element {
           : status.ok
             ? 'Ready - controllers work in OmniLauncher and in games.'
             : `Not ready: ${missing.join(', ')}. "Set up" asks for a one-time admin password ` +
-              'to install python-evdev and grant access to controllers.'}
+              'to install what is missing and grant access to controllers.'}
       </span>
       {result && (
         <span style={{ color: result.ok ? 'var(--good)' : 'var(--bad)', fontSize: 12 }}>

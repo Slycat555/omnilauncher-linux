@@ -75,8 +75,9 @@ backends (`gogdl`, `legendary`, `nile`).
   trackpads, back buttons and rumble. Needs `python3-evdev` and access to `/dev/uinput` and
   the controllers. If anything is missing (Bazzite/SteamOS have it all, most distros don't),
   OmniLauncher offers to set it up once at startup — one admin password prompt that installs
-  `python3-evdev` with your package manager (dnf, apt, pacman, zypper, xbps, eopkg) and adds
-  a udev rule — and again from **Settings → Controllers → Set up**.
+  `python3-evdev` with your package manager (dnf, apt, pacman, zypper, xbps, eopkg), adds
+  a udev rule, and loads the Xbox controller driver (`xpad`) - on Fedora-based distros that
+  means installing `kernel-modules-extra`, which may need a reboot — and again from **Settings → Controllers → Set up**.
 
 - **Full controller support in the UI** — Xbox/PlayStation/generic pads and the Steam
   Controller drive the whole UI, including bumpers, cover-art picking and game options.
