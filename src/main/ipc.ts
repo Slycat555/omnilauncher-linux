@@ -384,5 +384,8 @@ export function registerIpcHandlers(): void {
     .catch(() => {})
 
   safeHandle('wine:getActivity', async () => getWineActivity())
-  startWineMonitor((activity: WineActivity) => broadcast('wine:activity', activity))
+  startWineMonitor(
+    (activity: WineActivity) => broadcast('wine:activity', activity),
+    (gameId) => installManager.isWorkingOn(gameId)
+  )
 }

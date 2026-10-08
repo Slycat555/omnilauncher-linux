@@ -130,8 +130,18 @@ class InstallManager {
    *  so cancelling has to go through Steam itself (see cancelSteam). */
   private steamTasks = new Map<string, SteamInstallTask>()
 
+  /** Games being uninstalled, plus a short grace period after - Steam can still be
+   *  finishing an uninstall script once the manifest is gone. */
+  private uninstalling = new Set<string>()
+
   isBusy(gameId: string): boolean {
     return this.children.has(gameId) || this.steamTasks.has(gameId)
+  }
+
+  /** Installing or uninstalling - anything Wine/Steam runs for the game meanwhile is
+   *  that work, not the game being played. */
+  isWorkingOn(gameId: string): boolean {
+    return this.isBusy(gameId) || this.uninstalling.has(gameId)
   }
 
   async cancel(gameId: string, steam?: SteamDetection): Promise<void> {
@@ -366,6 +376,19 @@ class InstallManager {
   }
 
   async uninstall(game: UnifiedGame, ctx: RuntimeContext, onProgress: ProgressCb): Promise<void> {
+    this.uninstalling.add(game.id)
+    try {
+      await this.uninstallNow(game, ctx, onProgress)
+    } finally {
+      setTimeout(() => this.uninstalling.delete(game.id), 30000)
+    }
+  }
+
+  private async uninstallNow(
+    game: UnifiedGame,
+    ctx: RuntimeContext,
+    onProgress: ProgressCb
+  ): Promise<void> {
     if (game.store === 'steam') {
       onProgress({ gameId: game.id, phase: 'starting', message: `${game.title}: uninstalling` })
       await uninstallSteamGame(ctx.steam, game.appId)

@@ -46,6 +46,10 @@ const NON_GAME_EXE_RE =
 const NON_GAME_PATH_RE =
   /\\windows\\(system32|syswow64)\\|\\program files( \(x86\))?\\steam\\|_commonredist|\\temp\\|[\\/]\.cache[\\/]|winetricks/i
 
+/** Steam work that runs under a reaper but isn't the game itself. */
+const STEAM_NON_GAME_RE =
+  /iscriptevaluator|legacycompat|steam-runtime-(check-requirements|launcher-service)|\bunins\d*\.exe|_commonredist/i
+
 let current: WineActivity = { active: false, gameIds: [] }
 let inactiveStreak = 0
 let timer: NodeJS.Timeout | null = null
@@ -117,6 +121,10 @@ function launchedGameId(environ: string, shortcuts: Map<string, string>): string
   return 'unknown'
 }
 
+/** Games OmniLauncher is installing or uninstalling right now - whatever Steam or Wine
+ *  runs for them meanwhile (uninstall scripts, redistributables) isn't the game. */
+let isBusy: (gameId: string) => boolean = () => false
+
 async function scan(): Promise<WineActivity> {
   const shortcuts = shortcutGameIds()
   const gameIds = new Set<string>()
@@ -130,6 +138,9 @@ async function scan(): Promise<WineActivity> {
     // Steam runs every game it launches - native Linux or Proton, Steam app or non-Steam
     // shortcut - under "reaper SteamLaunch AppId=<id>", so that alone identifies it.
     const reaper = args.match(/\breaper\b.*\bSteamLaunch\b.*\bAppId=(\d+)/)
+    // Steam also uses a reaper for an app's install/uninstall scripts and its runtime
+    // setup - those aren't the game.
+    if (reaper && STEAM_NON_GAME_RE.test(args)) continue
     if (reaper) {
       gameIds.add(steamAppGameId(reaper[1], shortcuts))
       continue
@@ -153,6 +164,7 @@ async function scan(): Promise<WineActivity> {
     const id = launchedGameId(await runOnHost('cat', [`/proc/${pid}/environ`]), shortcuts)
     if (id) gameIds.add(id)
   }
+  for (const id of [...gameIds]) if (isBusy(id)) gameIds.delete(id)
   // A known game makes an 'unknown' entry for the same session redundant.
   if (gameIds.size > 1) gameIds.delete('unknown')
   return { active: gameIds.size > 0, gameIds: [...gameIds].sort() }
@@ -169,8 +181,12 @@ function sameActivity(a: WineActivity, b: WineActivity): boolean {
 /** Polls for a real Windows game running under Wine/Proton - launched by Steam, Heroic or
  *  this app, not just games this app launched itself - while ignoring Wine activity that
  *  isn't a game (install scripts, winetricks, redistributables, an idle wineserver). */
-export function startWineMonitor(onChange: (activity: WineActivity) => void): void {
+export function startWineMonitor(
+  onChange: (activity: WineActivity) => void,
+  busy?: (gameId: string) => boolean
+): void {
   if (timer) return
+  if (busy) isBusy = busy
   const tick = async (): Promise<void> => {
     const next = await scan()
     if (!next.active && current.active) {
