@@ -1,5 +1,5 @@
 import { execFile } from 'child_process'
-import { existsSync, readFileSync } from 'fs'
+import { existsSync, readFileSync, realpathSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import { promisify } from 'util'
@@ -30,10 +30,35 @@ export interface SteamDetection {
   execCommand: string[] | null
 }
 
+/** Where a native Steam keeps its files differs by distro and package: ~/.steam/root is
+ *  the symlink Steam's own bootstrap maintains to the real location everywhere, then the
+ *  usual places themselves - Fedora/Arch/Bazzite (~/.local/share/Steam), Debian/Ubuntu's
+ *  steam-installer (~/.steam/debian-installation) and the Snap. */
+function nativeSteamRoot(): string {
+  const home = homedir()
+  const candidates = [
+    join(home, '.steam', 'root'),
+    join(home, '.steam', 'steam'),
+    join(home, '.local', 'share', 'Steam'),
+    join(home, '.steam', 'debian-installation'),
+    join(home, 'snap', 'steam', 'common', '.local', 'share', 'Steam')
+  ]
+  for (const c of candidates) {
+    try {
+      const real = realpathSync(c)
+      if (existsSync(join(real, 'steamapps'))) return real
+    } catch {
+      // missing or dangling link
+    }
+  }
+  return join(home, '.local', 'share', 'Steam')
+}
+
 export async function detectSteam(): Promise<SteamDetection> {
-  const nativeRoot = join(homedir(), '.local', 'share', 'Steam')
+  const nativeRoot = nativeSteamRoot()
   const hasNativeRoot = existsSync(join(nativeRoot, 'steamapps'))
-  const nativeBin = existsOrNull('/usr/bin/steam') ?? (await which('steam'))
+  const nativeBin =
+    existsOrNull('/usr/bin/steam') ?? existsOrNull('/usr/games/steam') ?? (await which('steam'))
   if (hasNativeRoot || nativeBin) {
     return { present: true, variant: 'native', root: nativeRoot, execCommand: ['steam'] }
   }

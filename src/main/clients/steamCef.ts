@@ -96,6 +96,18 @@ export async function evaluateInSteam<T>(expression: string, timeoutMs: number):
   })
 }
 
+/** Whether anything answers on the remote-debugging port at all - false means Steam was
+ *  started without `.cef-enable-remote-debugging` (or isn't running), as opposed to its
+ *  UI context just not being up yet. */
+export async function steamCefPortOpen(): Promise<boolean> {
+  try {
+    await fetch(`http://127.0.0.1:${CEF_PORT}/json/version`, { signal: AbortSignal.timeout(1500) })
+    return true
+  } catch {
+    return false
+  }
+}
+
 export async function steamCefAvailable(): Promise<boolean> {
   return (
     (await evaluateInSteam<boolean>(

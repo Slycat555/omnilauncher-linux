@@ -8,10 +8,10 @@ import {
   closeSteamWindow,
   closeVulkanShaderWindow,
   disarmSteamWindowSuppression,
+  ensureSteamReady,
   isSteamGameRunning,
   launchSteamGame,
-  shutdownSteam,
-  startSteamSilently
+  shutdownSteam
 } from './clients/steam'
 import {
   ensureSteamAutoAccept,
@@ -19,8 +19,6 @@ import {
   getSteamLaunchOptions,
   setSteamLaunchOptions,
   setSteamShortcutLaunchOptions,
-  steamCefAvailable,
-  waitForSteamCef,
   type SteamShortcut
 } from './clients/steamCef'
 import { loadSettings } from './config'
@@ -202,7 +200,7 @@ async function runThroughSteam(
   // watching, not scrambling to start up in reaction to it.
   armSteamWindowSuppression()
   // Steam isn't started with OmniLauncher - only now, for a Steam game.
-  if (startSteamSilently(ctx.steam)) await waitForSteamCef(120000)
+  await ensureSteamReady(ctx.steam)
   // Steam is headless, so a pre-launch question (EULA, notice, launch option...) would
   // otherwise wait forever on a dialog nobody can see - have Steam answer it itself.
   await ensureSteamAutoAccept()
@@ -277,8 +275,7 @@ export async function gogSteamShortcut(
   gamescope: string[] | null = null
 ): Promise<SteamShortcut | null> {
   if (!ctx.steam.execCommand) return null
-  if (startSteamSilently(ctx.steam)) await waitForSteamCef(120000)
-  if (!(await steamCefAvailable())) return null
+  if (!(await ensureSteamReady(ctx.steam))) return null
 
   const env: Record<string, string> = { OMNILAUNCHER_GAME_ID: game.id }
   for (const key of ['WINEPREFIX', 'PROTONPATH', 'GAMEID', 'STORE']) {

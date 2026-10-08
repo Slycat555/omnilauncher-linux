@@ -39,7 +39,7 @@ import {
 } from './launchManager'
 import { detectControllerMode } from './controllerSupport'
 import { getControllerMode, setControllerMode, startUiInput } from './omniInput'
-import { isSteamRunning } from './clients/steam'
+import { enableSteamRemoteDebugging, isSteamRunning } from './clients/steam'
 import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } from './library'
 import { isNfcAvailable, startNfcWatcher, writeGameToTag } from './nfcManager'
 import { fixNfcPermissions } from './clients/nfcPermissionFix'
@@ -360,11 +360,15 @@ export function registerIpcHandlers(): void {
   // when a Steam game is installed or played (both start it on demand). If it happens to
   // be running already, its settings are brought in line the same as before.
   void getRuntimeDetections()
-    .then(async ({ heroic }) => {
+    .then(async ({ steam, heroic }) => {
       // Controller settings left in Heroic's game configs by a session that never got to
       // finish (OmniLauncher closed mid-game) - they'd hide the controllers from that game
       // when it's started from Heroic itself.
       clearAllHeroicSessionEnv(heroic)
+      // So whenever Steam next starts (from here, at login or by hand) it opens the port
+      // the auto-accept/silent-install calls need - Decky isn't there to do it outside
+      // Bazzite/SteamOS.
+      enableSteamRemoteDebugging(steam)
       if (await waitForSteamCef(3000)) {
         await ensureSteamAutoAccept()
         // Steam Input for generic controllers (the 8BitDo isn't an Xbox/PlayStation pad) -

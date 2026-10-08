@@ -60,10 +60,12 @@ backends (`gogdl`, `legendary`, `nile`).
 
 - **Seamless Steam** — Steam runs in the background with no windows; install prompts, EULAs,
   uninstall confirmations and pre-launch dialogs are answered automatically. This uses Steam's own client API, which
-  needs Steam's remote debugging switched on: create an empty
-  `~/.local/share/Steam/.cef-enable-remote-debugging` file and restart Steam (the same switch
-  Decky Loader uses). Note that any local program can then control Steam through
-  `localhost:8080`. Without it, Steam's normal dialogs appear instead.
+  needs Steam's remote debugging switched on (the same switch Decky Loader uses).
+  OmniLauncher turns it on itself on any distro: it creates the empty
+  `.cef-enable-remote-debugging` file in your Steam folder (native, Debian/Ubuntu, Snap or
+  Flatpak Steam), and if Steam was already running without it, restarts Steam once in the
+  background (never while a Steam game is running). Note that any local program can then
+  control Steam through `localhost:8080`; delete that file and restart Steam to turn it off.
 
 - **Built-in Steam Input for non-Steam games** — OmniLauncher's own controller layer
   (`resources/omni_input.py`) runs Steam Input's actual templates without Steam: pick

@@ -1,11 +1,17 @@
 import { execSync, spawn } from 'child_process'
-import { existsSync, lstatSync, readdirSync, readFileSync } from 'fs'
+import { existsSync, lstatSync, readdirSync, readFileSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { UnifiedGame } from '../../shared/types'
 import { isVdfObject, parseVdf, type VdfNode } from '../vdf'
 import { STEAM_FLATPAK_ID, type SteamDetection } from './detect'
-import { steamAutoInstall, steamUninstall, waitForSteamCef } from './steamCef'
+import {
+  steamAutoInstall,
+  steamCefAvailable,
+  steamCefPortOpen,
+  steamUninstall,
+  waitForSteamCef
+} from './steamCef'
 import { hostEnv } from '../hostEnv'
 
 function str(v: VdfNode | string | undefined, fallback = ''): string {
@@ -267,11 +273,18 @@ export function isSteamRunning(variant: SteamDetection['variant']): boolean {
       variant === 'flatpak' ? join(homedir(), '.var', 'app', STEAM_FLATPAK_ID) : homedir()
     const pidFile = join(steamHome, '.steam', 'steam.pid')
     const pid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10)
-    if (!Number.isFinite(pid)) return false
+    if (!Number.isFinite(pid)) throw new Error('no pid')
     process.kill(pid, 0)
     return true
   } catch {
-    return false
+    // No usable pid file where expected (Snap and some distro packages keep ~/.steam
+    // elsewhere) - fall back to looking for the client binary itself.
+    try {
+      execSync('pgrep -f "ubuntu12_32/steam( |$)"', { stdio: 'ignore' })
+      return true
+    } catch {
+      return false
+    }
   }
 }
 
@@ -628,6 +641,7 @@ function steamUriForInstall(
  *  by the time anything is installed or launched, without its library window appearing. */
 export function startSteamSilently(det: SteamDetection): boolean {
   if (!det.execCommand || isSteamRunning(det.variant)) return false
+  enableSteamRemoteDebugging(det)
   const cold = steamArgv(det.execCommand, ['-silent'])
   spawnDetached(cold.cmd, cold.args)
   return true
@@ -646,6 +660,48 @@ export async function shutdownSteam(det: SteamDetection, timeoutMs = 20000): Pro
     if (!isSteamRunning(det.variant)) return true
   }
   return !isSteamRunning(det.variant)
+}
+
+/** Steam only opens the CEF remote-debugging port (which every steamCef.ts call - auto-
+ *  accepting launch prompts, silent installs, shortcuts - goes through) when the empty
+ *  `.cef-enable-remote-debugging` file is in its directory at startup. Bazzite/SteamOS
+ *  get it from Decky Loader; every other distro has to have it created, so it's done
+ *  here before Steam is started. Returns true if the file had to be created. */
+export function enableSteamRemoteDebugging(det: SteamDetection): boolean {
+  if (!det.root || !existsSync(det.root)) return false
+  const flag = join(det.root, '.cef-enable-remote-debugging')
+  if (existsSync(flag)) return false
+  try {
+    writeFileSync(flag, '')
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** Gets Steam running with its remote-debugging port up and waits for its UI context.
+ *  A Steam that was already running before the flag existed (started at login, by hand,
+ *  or before this OmniLauncher version) never opens the port, so it's restarted once
+ *  silently - but never while one of its games is running. */
+export async function ensureSteamReady(det: SteamDetection, timeoutMs = 120000): Promise<boolean> {
+  if (!det.execCommand) return false
+  enableSteamRemoteDebugging(det)
+  if (startSteamSilently(det)) return waitForSteamCef(timeoutMs)
+  if (await steamCefPortOpen()) return waitForSteamCef(timeoutMs)
+  if (steamGameRunning()) return false
+  await shutdownSteam(det)
+  if (startSteamSilently(det)) return waitForSteamCef(timeoutMs)
+  return steamCefAvailable()
+}
+
+function steamGameRunning(): boolean {
+  try {
+    // [0-9] so the pattern can't match pgrep's own sh -c command line
+    execSync('pgrep -f "SteamLaunch AppId=[0-9]"', { stdio: 'ignore' })
+    return true
+  } catch {
+    return false
+  }
 }
 
 export function launchSteamGame(det: SteamDetection, appId: string): void {
@@ -740,7 +796,7 @@ export async function installSteamGame(
   // (EULA, not enough disk space) - in that case its dialog is already open.
   // Steam not running: start it silently and wait for its install API, rather than going
   // through steam://install, whose dialog is exactly what this path avoids.
-  if (startSteamSilently(det)) await waitForSteamCef(120000)
+  await ensureSteamReady(det)
   // Steam's desktop UI still opens its own install window alongside the wizard even
   // though every question is answered through the API - minimize it the instant it maps
   // so Steam stays headless. Disarmed afterwards so the user can still open Steam.
@@ -844,7 +900,7 @@ export async function uninstallSteamGame(det: SteamDetection, appId: string): Pr
   // Steam may not be running (it's only started for Steam games) - start it
   // headless and wait for its API rather than falling back to steam://uninstall, which
   // shows Steam's confirmation dialog.
-  if (startSteamSilently(det)) await waitForSteamCef(120000)
+  await ensureSteamReady(det)
   const silent = isSteamRunning(det.variant) && (await steamUninstall(appId))
   if (!silent) steamUri(det.execCommand, det.variant, `steam://uninstall/${appId}`)
 
