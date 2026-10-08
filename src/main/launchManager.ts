@@ -1,14 +1,9 @@
 import { spawn } from 'child_process'
-import { readFileSync, writeFileSync } from 'fs'
+import { readdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
-import type { InstallProgressEvent, LaunchStateEvent, UnifiedGame } from '../shared/types'
+import type { LaunchStateEvent, UnifiedGame } from '../shared/types'
 import type { HeroicDetection, SteamDetection } from './clients/detect'
-import {
-  buildAmazonLaunchCommand,
-  buildEpicLaunchCommand,
-  buildGogLaunchCommand,
-  resolveOrInstallWineForGame
-} from './clients/heroic'
+import { heroicLaunchArgv, quitHeroic, setHeroicSessionEnv } from './clients/heroic'
 import {
   armSteamWindowSuppression,
   closeSteamWindow,
@@ -42,7 +37,6 @@ export interface RuntimeContext {
 }
 
 type StateCb = (evt: LaunchStateEvent) => void
-type ProgressCb = (evt: InstallProgressEvent) => void
 
 const runningIds = new Set<string>()
 
@@ -53,8 +47,7 @@ export function isRunning(gameId: string): boolean {
 export async function launchGame(
   game: UnifiedGame,
   ctx: RuntimeContext,
-  onState: StateCb,
-  onProgress?: ProgressCb
+  onState: StateCb
 ): Promise<void> {
   if (runningIds.has(game.id)) return
   // Reported immediately, not once a process actually exists - a Windows title with no
@@ -79,97 +72,98 @@ export async function launchGame(
     return
   }
 
-  const wine =
-    game.platform === 'windows'
-      ? await resolveOrInstallWineForGame(
-          ctx.heroic,
-          game.store,
-          game.appId,
-          ctx.steam.root,
-          game.id,
-          onProgress,
-          game.title
-        )
-      : null
-  const builder =
-    game.store === 'gog'
-      ? buildGogLaunchCommand(ctx.heroic, game, wine, ctx.steam.root)
-      : game.store === 'epic'
-        ? buildEpicLaunchCommand(ctx.heroic, game, wine, ctx.steam.root)
-        : buildAmazonLaunchCommand(ctx.heroic, game, wine)
+  await runThroughHeroic(game, ctx, onState)
+}
 
-  if (!builder) {
+/**
+ * Test build: a GOG/Epic/Amazon game is launched by Heroic itself, headless (heroic://
+ * launch with --no-gui), and never touches Steam. OmniLauncher's own controller layer
+ * (omniInput.ts) stands in for Steam Input for the session; Steam, if a Steam game left it
+ * running, is closed first so it can't grab the same controllers.
+ *
+ * Heroic reads a game's config (where the session's environment goes) when it first loads
+ * it and then keeps it in memory, so Heroic is quit before the launch and again after.
+ * The game is followed by the OMNILAUNCHER_GAME_ID tag in its environment.
+ */
+async function runThroughHeroic(
+  game: UnifiedGame,
+  ctx: RuntimeContext,
+  onState: StateCb
+): Promise<void> {
+  const argv = heroicLaunchArgv(ctx.heroic, game)
+  if (!argv) {
     runningIds.delete(game.id)
-    onState({
-      gameId: game.id,
-      running: false,
-      error:
-        game.platform === 'windows'
-          ? 'No Wine/Proton available and downloading Proton-GE failed - check your network connection and try again.'
-          : 'Unable to build a launch command (backend CLI not found).'
-    })
+    onState({ gameId: game.id, running: false, error: 'Heroic Games Launcher not found.' })
     return
   }
 
-  // Test build: no Steam for non-Steam games. Steam is closed for the session (it would
-  // grab the controllers too) and OmniLauncher's own controller layer stands in for Steam
-  // Input; Steam comes back in the background, silently, once the game exits.
-  const steamWasClosed = await shutdownSteam(ctx.steam)
+  await shutdownSteam(ctx.steam)
+  await quitHeroic()
   const input = await startOmniInput(getControllerMode(game.id), ctx.steam.root)
-  let cleanedUp = false
-  const afterGame = (): void => {
-    if (cleanedUp) return
-    cleanedUp = true
-    input?.stop()
-    if (steamWasClosed) startSteamSilently(ctx.steam)
-  }
+  setHeroicSessionEnv(ctx.heroic, game.appId, {
+    OMNILAUNCHER_GAME_ID: game.id,
+    ...(input ? omniInputGameEnv(input) : {})
+  })
+
+  const [cmd, ...args] = argv
+  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', env: hostEnv() })
+  child.on('error', () => {})
+  child.unref()
 
   const startedAt = Date.now()
-  // Direct launch: wrap the whole command in gamescope ourselves.
-  const [bin, args] = gamescope
-    ? ['gamescope', [...gamescope, builder.bin, ...builder.args]]
-    : [builder.bin, builder.args]
-  const child = spawn(bin, args, {
-    // OMNILAUNCHER_GAME_ID is inherited down through Wine/Proton by the game itself - the
-    // Wine monitor (wineMonitor.ts) uses it to recognise a real game launched from here.
-    env: hostEnv({
-      ...builder.env,
-      ...(input ? omniInputGameEnv(input) : {}),
-      OMNILAUNCHER_GAME_ID: game.id
-    }),
-    detached: true
-  })
-
-  let outputTail = ''
-  child.stderr?.on('data', (chunk: Buffer) => {
-    outputTail = (outputTail + chunk.toString()).slice(-4000)
-  })
-  child.stdout?.on('data', (chunk: Buffer) => {
-    outputTail = (outputTail + chunk.toString()).slice(-4000)
-  })
-
-  child.on('error', (err) => {
-    afterGame()
-    runningIds.delete(game.id)
-    onState({ gameId: game.id, running: false, error: err.message })
-  })
-
-  child.on('close', (code) => {
-    afterGame()
-    runningIds.delete(game.id)
-    const minutes = Math.round((Date.now() - startedAt) / 60000)
-    addPlaySession(game.id, minutes)
-    if (code !== 0 && code !== null) {
-      const detail = outputTail.trim().split('\n').slice(-5).join(' | ')
-      onState({
-        gameId: game.id,
-        running: false,
-        error: detail || `Launcher exited with code ${code}`
-      })
-    } else {
-      onState({ gameId: game.id, running: false })
+  let seenAt = 0
+  let goneTicks = 0
+  // Heroic may first have to fetch a Proton/runtime update before the game starts.
+  const START_TIMEOUT_MS = 180000
+  const poll = setInterval(() => {
+    if (isTaggedGameRunning(game.id)) {
+      if (!seenAt) seenAt = Date.now()
+      goneTicks = 0
+      return
     }
-  })
+    if (!seenAt) {
+      if (Date.now() - startedAt > START_TIMEOUT_MS) {
+        void finish("Heroic didn't start the game - try launching it from Heroic to see why.")
+      }
+      return
+    }
+    // Two misses in a row: a Proton game hands off between processes at startup.
+    if (++goneTicks >= 2) void finish()
+  }, 3000)
+
+  async function finish(error?: string): Promise<void> {
+    clearInterval(poll)
+    input?.stop()
+    try {
+      setHeroicSessionEnv(ctx.heroic, game.appId, null)
+    } catch {
+      // config unreadable - cleared again at next start
+    }
+    await quitHeroic()
+    if (seenAt) addPlaySession(game.id, Math.round((Date.now() - seenAt) / 60000))
+    runningIds.delete(game.id)
+    onState({ gameId: game.id, running: false, ...(error ? { error } : {}) })
+  }
+}
+
+/** Whether any process carries this game's OMNILAUNCHER_GAME_ID tag (set through Heroic's
+ *  per-game environment, and inherited by everything the game starts). */
+function isTaggedGameRunning(gameId: string): boolean {
+  const needle = Buffer.from(`OMNILAUNCHER_GAME_ID=${gameId}\0`)
+  let pids: string[]
+  try {
+    pids = readdirSync('/proc').filter((n) => /^\d+$/.test(n))
+  } catch {
+    return false
+  }
+  for (const pid of pids) {
+    try {
+      if (readFileSync(`/proc/${pid}/environ`).includes(needle)) return true
+    } catch {
+      // gone, or not ours
+    }
+  }
+  return false
 }
 
 /** Launches through the Steam client (a Steam game, or a GOG game's non-Steam shortcut)
@@ -187,6 +181,8 @@ async function runThroughSteam(
   // milliseconds of the URI being handed to Steam, so suppression needs to already be
   // watching, not scrambling to start up in reaction to it.
   armSteamWindowSuppression()
+  // Test build: Steam isn't started with OmniLauncher - only now, for a Steam game.
+  if (startSteamSilently(ctx.steam)) await waitForSteamCef(120000)
   // Steam is headless, so a pre-launch question (EULA, notice, launch option...) would
   // otherwise wait forever on a dialog nobody can see - have Steam answer it itself.
   await ensureSteamAutoAccept()

@@ -41,8 +41,12 @@ import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } fro
 import { isNfcAvailable, startNfcWatcher, writeGameToTag } from './nfcManager'
 import { fixNfcPermissions } from './clients/nfcPermissionFix'
 import { chooseCover, getCoverArt, searchCoverOptions } from './steamgriddb'
-import { startSteamSilently } from './clients/steam'
-import { getGameProton, listProtonBuilds, setGameProton } from './clients/heroic'
+import {
+  clearAllHeroicSessionEnv,
+  getGameProton,
+  listProtonBuilds,
+  setGameProton
+} from './clients/heroic'
 import {
   enableSteamInputForGenericControllers,
   getSteamCompatTools,
@@ -267,11 +271,7 @@ export function registerIpcHandlers(): void {
     // exists - the Play button already goes disabled/"Running…" for the whole launch
     // attempt, including a first Windows launch that has to fetch Proton-GE first.
     const onState = (evt: LaunchStateEvent): void => broadcast('launch:state', evt)
-    // Reuses the same 'install:progress' channel the install flow already broadcasts on
-    // (see installManager) purely so that download's lines land in consoleLog/progress
-    // state the same way an install's do, for whenever the UI surfaces those.
-    const onProgress = (evt: InstallProgressEvent): void => broadcast('install:progress', evt)
-    void launchGame(game, ctx, onState, onProgress)
+    void launchGame(game, ctx, onState)
   })
 
   safeHandle('shell:openPath', async (_e, path: string) => {
@@ -348,12 +348,16 @@ export function registerIpcHandlers(): void {
     (message) => broadcast('app:warning', message)
   )
 
-  // Steam runs headless (tray only, no window) and is started up front, so its install
-  // API is ready before the first install - see startSteamSilently().
+  // Test build: Steam is only for Steam games - it isn't started with OmniLauncher, only
+  // when a Steam game is installed or played (both start it on demand). If it happens to
+  // be running already, its settings are brought in line the same as before.
   void getRuntimeDetections()
-    .then(async ({ steam }) => {
-      startSteamSilently(steam)
-      if (await waitForSteamCef(120000)) {
+    .then(async ({ heroic }) => {
+      // Controller settings left in Heroic's game configs by a session that never got to
+      // finish (OmniLauncher closed mid-game) - they'd hide the controllers from that game
+      // when it's started from Heroic itself.
+      clearAllHeroicSessionEnv(heroic)
+      if (await waitForSteamCef(3000)) {
         await ensureSteamAutoAccept()
         // Steam Input for generic controllers (the 8BitDo isn't an Xbox/PlayStation pad) -
         // re-applied every start so all Steam games, and GOG games launched through Steam,

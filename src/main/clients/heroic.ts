@@ -864,3 +864,134 @@ export function setGameProton(
   mkdirSync(dirname(file), { recursive: true })
   writeFileSync(file, JSON.stringify(data, null, 2))
 }
+
+// ---------- Launching through Heroic ----------
+
+const HEROIC_FLATPAK_APP = 'com.heroicgameslauncher.hgl'
+
+/** Heroic's runner name for a store, as its heroic://launch links take it. */
+export function heroicRunner(store: StoreKind): string | null {
+  if (store === 'gog') return 'gog'
+  if (store === 'epic') return 'legendary'
+  if (store === 'amazon') return 'nile'
+  return null
+}
+
+/** argv that starts Heroic in the background (tray only, no window) and has it launch a
+ *  game - Heroic then runs it exactly as if Play had been pressed there: its Proton, its
+ *  prefix, its fixes, its playtime and cloud saves. */
+export function heroicLaunchArgv(det: HeroicDetection, game: UnifiedGame): string[] | null {
+  const runner = heroicRunner(game.store)
+  if (!runner || !det.present) return null
+  const uri = `heroic://launch?appName=${encodeURIComponent(game.appId)}&runner=${runner}`
+  const heroic = det.variant === 'flatpak' ? ['flatpak', 'run', HEROIC_FLATPAK_APP] : ['heroic']
+  return [...heroic, '--no-gui', uri]
+}
+
+/** The environment variables OmniLauncher adds to a Heroic game for one session. */
+const SESSION_ENV_KEYS = [
+  'OMNILAUNCHER_GAME_ID',
+  'SDL_GAMECONTROLLER_IGNORE_DEVICES',
+  'SDL_JOYSTICK_HIDAPI'
+]
+
+interface HeroicEnvEntry {
+  key: string
+  value: string
+}
+
+/**
+ * Adds `env` to the game's environment in Heroic's per-game config (its "Environment
+ * Variables" setting), or with null takes OmniLauncher's entries back out - everything else
+ * there is left as it was. Heroic reads this file when it first loads the game's config,
+ * so it must not be running while this changes (see quitHeroic).
+ */
+export function setHeroicSessionEnv(
+  det: HeroicDetection,
+  appId: string,
+  env: Record<string, string> | null
+): void {
+  const file = gameConfigPath(det, appId)
+  if (!file) return
+  const data = (readJsonSafe<Record<string, unknown>>(file) ?? {}) as Record<string, unknown>
+  const entry = { ...((data[appId] as Record<string, unknown>) ?? {}) }
+  const kept = ((entry.enviromentOptions as HeroicEnvEntry[] | undefined) ?? []).filter(
+    (e) => !SESSION_ENV_KEYS.includes(e.key)
+  )
+  const added = env ? Object.entries(env).map(([key, value]) => ({ key, value })) : []
+  if (!env && kept.length === ((entry.enviromentOptions as unknown[]) ?? []).length) return
+  if (kept.length || added.length) entry.enviromentOptions = [...kept, ...added]
+  else delete entry.enviromentOptions
+  data[appId] = entry
+  if (!('version' in data)) data.version = 'v0'
+  if (!('explicit' in data)) data.explicit = true
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(data, null, 2))
+}
+
+/** Takes session entries back out of every game's config - for a session OmniLauncher
+ *  didn't get to finish (it was closed or crashed while a game ran). */
+export function clearAllHeroicSessionEnv(det: HeroicDetection): void {
+  if (!det.configDir) return
+  let names: string[] = []
+  try {
+    names = readdirSync(join(det.configDir, 'GamesConfig'))
+  } catch {
+    return
+  }
+  for (const name of names) {
+    if (!name.endsWith('.json') || name === 'default.json') continue
+    try {
+      setHeroicSessionEnv(det, name.slice(0, -5), null)
+    } catch {
+      // unreadable config - leave it alone
+    }
+  }
+}
+
+/** Pids of Heroic's main (browser) process - not its renderer/GPU/zygote helpers. */
+async function heroicMainPids(): Promise<number[]> {
+  const { stdout } = await execFileP('ps', ['-eo', 'pid=,args='], { maxBuffer: 8 * 1024 * 1024 })
+  const pids: number[] = []
+  for (const line of stdout.split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(.*)$/)
+    if (!m) continue
+    const args = m[2]
+    if (/(^|\/)heroic\/heroic(\s|$)/.test(args) && !args.includes('--type=')) {
+      pids.push(Number(m[1]))
+    }
+  }
+  return pids
+}
+
+export async function isHeroicRunning(): Promise<boolean> {
+  try {
+    return (await heroicMainPids()).length > 0
+  } catch {
+    return false
+  }
+}
+
+/** Asks Heroic to quit (SIGTERM - Electron treats it as a normal quit, so Heroic saves
+ *  its state) and waits for it to be gone. */
+export async function quitHeroic(timeoutMs = 15000): Promise<void> {
+  let pids: number[]
+  try {
+    pids = await heroicMainPids()
+  } catch {
+    return
+  }
+  if (!pids.length) return
+  for (const pid of pids) {
+    try {
+      process.kill(pid, 'SIGTERM')
+    } catch {
+      // already gone
+    }
+  }
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 400))
+    if (!(await isHeroicRunning())) return
+  }
+}
