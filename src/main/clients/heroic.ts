@@ -995,7 +995,9 @@ export async function launchThroughHeroic(
 ): Promise<boolean> {
   const runner = heroicRunner(game.store)
   if (!runner || !det.present) return false
-  const uri = `heroic://launch?appName=${encodeURIComponent(game.appId)}&runner=${runner}`
+  // gui=false: the running Heroic only keeps its window hidden for a handed-over link
+  // when the link itself asks for that - --no-gui only covers the instance it's given to.
+  const uri = `heroic://launch?appName=${encodeURIComponent(game.appId)}&runner=${runner}&gui=false`
   if (game.store === 'gog') {
     ensureHeroicGogLogin(det)
     repairGogInstalledEntries(det)
