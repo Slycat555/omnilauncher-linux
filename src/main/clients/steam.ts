@@ -9,6 +9,7 @@ import {
   steamAutoInstall,
   steamCefAvailable,
   steamCefPortOpen,
+  hideSteamWindowsViaCef,
   steamUninstall,
   waitForSteamCef
 } from './steamCef'
@@ -428,6 +429,7 @@ function hideMatchingWindows(pred: (line: string) => boolean): void {
  *  which made this predicate match nothing at all and left every dialog sitting on
  *  screen for flatpak Steam even though the native package's window matched fine. */
 export function closeSteamWindow(): void {
+  void hideSteamWindowsViaCef()
   hideMatchingWindows((line) => line.includes('steamwebhelper'))
 }
 
@@ -466,6 +468,10 @@ export function closeVulkanShaderWindow(): void {
  */
 let watcherStarted = false
 let suppressionArmed = false
+/** While armed, Steam is also asked through its own window API (hideSteamWindowsViaCef)
+ *  to hide whatever it shows - the xprop/xdotool path below needs tools most distros
+ *  don't install and only sees X11 windows. */
+let cefHideTimer: ReturnType<typeof setInterval> | null = null
 let knownWindowIds = new Set<string>()
 
 /** xprop's _NET_CLIENT_LIST reports window ids as bare hex ("0x3a00024"), but wmctrl -l
@@ -499,6 +505,10 @@ export function armSteamWindowSuppression(): void {
   // A new launch: windows the user has since reopened may be minimized again.
   minimizedWindows.clear()
   suppressionArmed = true
+  if (!cefHideTimer) {
+    void hideSteamWindowsViaCef()
+    cefHideTimer = setInterval(() => void hideSteamWindowsViaCef(), 300)
+  }
   if (watcherStarted) return
   watcherStarted = true
 
@@ -551,6 +561,8 @@ export function armSteamWindowSuppression(): void {
 
 export function disarmSteamWindowSuppression(): void {
   suppressionArmed = false
+  if (cefHideTimer) clearInterval(cefHideTimer)
+  cefHideTimer = null
 }
 
 function spawnDetached(cmd: string, args: string[]): void {
@@ -686,12 +698,20 @@ export function enableSteamRemoteDebugging(det: SteamDetection): boolean {
 export async function ensureSteamReady(det: SteamDetection, timeoutMs = 120000): Promise<boolean> {
   if (!det.execCommand) return false
   enableSteamRemoteDebugging(det)
-  if (startSteamSilently(det)) return waitForSteamCef(timeoutMs)
+  if (startSteamSilently(det)) return startedHeadless(timeoutMs)
   if (await steamCefPortOpen()) return waitForSteamCef(timeoutMs)
   if (steamGameRunning()) return false
   await shutdownSteam(det)
-  if (startSteamSilently(det)) return waitForSteamCef(timeoutMs)
+  if (startSteamSilently(det)) return startedHeadless(timeoutMs)
   return steamCefAvailable()
+}
+
+/** Waits for a Steam we just started, then hides any window it showed anyway - not
+ *  every Steam build/desktop honours -silent for the main window. */
+async function startedHeadless(timeoutMs: number): Promise<boolean> {
+  const ready = await waitForSteamCef(timeoutMs)
+  if (ready) await hideSteamWindowsViaCef()
+  return ready
 }
 
 function steamGameRunning(): boolean {

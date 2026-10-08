@@ -63,10 +63,21 @@ async function findSharedContext(): Promise<string | null> {
 
 /** Runs one expression in Steam's UI context and returns its (JSON-serializable)
  *  value, awaiting it if it's a promise. */
-export async function evaluateInSteam<T>(expression: string, timeoutMs: number): Promise<T | undefined> {
+export async function evaluateInSteam<T>(
+  expression: string,
+  timeoutMs: number
+): Promise<T | undefined> {
   const wsUrl = await findSharedContext()
-  if (!wsUrl || typeof WebSocket === 'undefined') return undefined
+  if (!wsUrl) return undefined
+  return evaluateInTarget<T>(wsUrl, expression, timeoutMs)
+}
 
+function evaluateInTarget<T>(
+  wsUrl: string,
+  expression: string,
+  timeoutMs: number
+): Promise<T | undefined> {
+  if (typeof WebSocket === 'undefined') return Promise.resolve(undefined)
   return new Promise((resolve) => {
     const ws = new WebSocket(wsUrl)
     const timer = setTimeout(() => {
@@ -106,6 +117,48 @@ export async function steamCefPortOpen(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+/**
+ * Hides every Steam window that's on screen (main window, install/"Launching..." dialogs)
+ * the way closing it to the tray does - each window is its own CEF page whose
+ * SteamClient.Window acts on that window. Works on any desktop, X11 or Wayland, with no
+ * wmctrl/xdotool (which Bazzite ships but most distros don't). Popup menus and the
+ * shared context are never visible windows, so they're skipped. Returns how many were
+ * hidden; 0 when remote debugging isn't available.
+ */
+export async function hideSteamWindowsViaCef(): Promise<number> {
+  let targets: (CefTarget & { type?: string })[]
+  try {
+    const res = await fetch(`http://127.0.0.1:${CEF_PORT}/json`, {
+      signal: AbortSignal.timeout(1500)
+    })
+    targets = (await res.json()) as (CefTarget & { type?: string })[]
+  } catch {
+    return 0
+  }
+  const windows = targets.filter(
+    (t) =>
+      t.webSocketDebuggerUrl &&
+      (t.type ?? 'page') === 'page' &&
+      t.title !== 'SharedJSContext' &&
+      !/(Menu|Supernav)$/.test(t.title) &&
+      !t.url.startsWith('data:')
+  )
+  const results = await Promise.all(
+    windows.map((t) =>
+      evaluateInTarget<boolean>(
+        t.webSocketDebuggerUrl!,
+        `(() => {
+          if (document.visibilityState !== 'visible' || !SteamClient?.Window?.HideWindow) return false;
+          SteamClient.Window.HideWindow();
+          return true;
+        })()`,
+        2000
+      )
+    )
+  )
+  return results.filter((r) => r === true).length
 }
 
 export async function steamCefAvailable(): Promise<boolean> {
