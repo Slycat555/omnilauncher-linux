@@ -1,8 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import type { CompatInfo, ControllerMode } from '../../../shared/types'
+import type { CompatInfo, ControllerModeInfo, ControllerModeSetting } from '../../../shared/types'
 import { useAppStore } from '../store'
 import { useModalNav } from '../useModalNav'
-import { DownloadIcon, GamepadIcon, ImageIcon, NfcIcon, SettingsIcon, StopIcon, TrashIcon, XIcon } from './Icons'
+import {
+  DownloadIcon,
+  GamepadIcon,
+  ImageIcon,
+  NfcIcon,
+  SettingsIcon,
+  StopIcon,
+  TrashIcon,
+  XIcon
+} from './Icons'
 
 interface Item {
   key: string
@@ -36,7 +45,7 @@ export function GameDetailsPanel(): React.JSX.Element | null {
   // The Proton choice is a compact dropdown: one row until opened.
   const [protonOpen, setProtonOpen] = useState(false)
   // OmniLauncher's own controller layer - null for Steam games, which keep Steam Input.
-  const [inputMode, setInputMode] = useState<ControllerMode | null>(null)
+  const [inputMode, setInputMode] = useState<ControllerModeInfo | null>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -81,9 +90,10 @@ export function GameDetailsPanel(): React.JSX.Element | null {
 
   async function toggleInputMode(): Promise<void> {
     if (!gameId || !inputMode) return
-    const next: ControllerMode = inputMode === 'gamepad' ? 'kbm' : 'gamepad'
+    const order: ControllerModeSetting[] = ['auto', 'gamepad', 'kbm']
+    const next = order[(order.indexOf(inputMode.setting) + 1) % order.length]
     await window.api.setControllerMode(gameId, next)
-    setInputMode(next)
+    setInputMode({ ...inputMode, setting: next })
   }
 
   function installAction(): void {
@@ -270,16 +280,26 @@ export function GameDetailsPanel(): React.JSX.Element | null {
                   <span>Controller</span>
                 </div>
                 <p className="details-section-hint">
-                  {inputMode === 'gamepad'
-                    ? 'Your controller appears to the game as an Xbox controller.'
-                    : 'Sticks, buttons and triggers act as keyboard and mouse - for games without controller support.'}
+                  {inputMode.setting === 'auto'
+                    ? inputMode.supported === false
+                      ? 'This game has no controller support, so your controller works as keyboard and mouse.'
+                      : inputMode.supported
+                        ? 'This game supports controllers, so it sees an Xbox controller.'
+                        : 'Controller support unknown - the game sees an Xbox controller.'
+                    : inputMode.setting === 'gamepad'
+                      ? 'Your controller appears to the game as an Xbox controller.'
+                      : 'Sticks, buttons and triggers act as keyboard and mouse.'}
                 </p>
                 <button
                   className={`proton-select${isFocused('input')}`}
                   onClick={() => void toggleInputMode()}
                 >
                   <span className="proton-select-value">
-                    {inputMode === 'gamepad' ? 'Xbox controller' : 'Keyboard & mouse'}
+                    {inputMode.setting === 'auto'
+                      ? `Automatic (${inputMode.detected === 'kbm' ? 'keyboard & mouse' : 'Xbox controller'})`
+                      : inputMode.setting === 'gamepad'
+                        ? 'Xbox controller'
+                        : 'Keyboard & mouse'}
                   </span>
                   <span className="proton-select-arrow">⇄</span>
                 </button>

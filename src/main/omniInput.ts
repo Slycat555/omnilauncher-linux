@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'child_process'
 import { app } from 'electron'
 import { existsSync, readFileSync, writeFileSync } from 'fs'
 import { join } from 'path'
-import type { ControllerMode } from '../shared/types'
+import type { ControllerMode, ControllerModeSetting } from '../shared/types'
 import { hostEnv } from './hostEnv'
 import { appConfigDir } from './paths'
 
@@ -109,13 +109,14 @@ function readModes(): Record<string, ControllerMode> {
   }
 }
 
-export function getControllerMode(gameId: string): ControllerMode {
-  return readModes()[gameId] ?? 'gamepad'
+/** The game's override, or 'auto' (the default) to follow its controller support. */
+export function getControllerMode(gameId: string): ControllerModeSetting {
+  return readModes()[gameId] ?? 'auto'
 }
 
-export function setControllerMode(gameId: string, mode: ControllerMode): void {
+export function setControllerMode(gameId: string, setting: ControllerModeSetting): void {
   const modes = readModes()
-  if (mode === 'gamepad') delete modes[gameId]
-  else modes[gameId] = mode
+  if (setting === 'auto') delete modes[gameId]
+  else modes[gameId] = setting
   writeFileSync(modesFile(), JSON.stringify(modes, null, 2))
 }

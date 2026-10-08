@@ -29,12 +29,7 @@ export interface UnifiedGame {
 }
 
 export type InstallPhase =
-  | 'starting'
-  | 'downloading'
-  | 'installing'
-  | 'done'
-  | 'error'
-  | 'cancelled'
+  'starting' | 'downloading' | 'installing' | 'done' | 'error' | 'cancelled'
 
 export interface InstallProgressEvent {
   gameId: string
@@ -85,6 +80,17 @@ export interface CompatInfo {
 /** How OmniLauncher's own controller layer presents controllers to a non-Steam game:
  *  as an Xbox 360 pad, or as keyboard + mouse for games with no controller support. */
 export type ControllerMode = 'gamepad' | 'kbm'
+
+/** A game's controller choice: 'auto' follows whether the game supports controllers. */
+export type ControllerModeSetting = 'auto' | ControllerMode
+
+export interface ControllerModeInfo {
+  setting: ControllerModeSetting
+  /** What 'auto' picks for this game. */
+  detected: ControllerMode
+  /** Whether the stores list controller support; null when they couldn't say. */
+  supported: boolean | null
+}
 
 export type ClientVariant = 'native' | 'flatpak' | null
 

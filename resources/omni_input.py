@@ -153,24 +153,43 @@ class X360Sink:
 
 
 class KbmSink:
-    """Keyboard + mouse for games with no controller support - Steam's "Keyboard (WASD) and
-    Mouse" template: left stick WASD, right stick aims the mouse, triggers click."""
+    """Keyboard + mouse for games with no controller support (Papers, Please, Field of
+    Glory, Mount & Blade...) - one layout that suits both mouse-driven and WASD games:
+
+      right stick / right trackpad  mouse      RT / LT          left / right click
+      left stick                    WASD       LB / RB          scroll up / down
+      A B X Y                       Space E R F                 R3 middle click
+      D-pad                         1 2 3 4    L3               Shift
+      View / Menu                   Tab / Esc  Steam button     Enter
+    """
 
     KEYS = {'a': e.KEY_SPACE, 'b': e.KEY_E, 'x': e.KEY_R, 'y': e.KEY_F,
-            'leftshoulder': e.KEY_Q, 'rightshoulder': e.KEY_G, 'back': e.KEY_TAB,
-            'start': e.KEY_ESC, 'leftstick': e.KEY_LEFTSHIFT, 'rightstick': e.KEY_LEFTCTRL,
+            'back': e.KEY_TAB, 'start': e.KEY_ESC, 'leftstick': e.KEY_LEFTSHIFT,
+            'rightstick': e.BTN_MIDDLE,
             'dpup': e.KEY_1, 'dpright': e.KEY_2, 'dpdown': e.KEY_3, 'dpleft': e.KEY_4,
             'guide': e.KEY_ENTER}
+    SCROLL_REPEAT = 0.12  # seconds between wheel notches while a bumper is held
 
     def __init__(self, pointer):
         self.pointer = pointer
         self.state = blank_state()
         self.last = {}
+        self.scroll_wait = 0.0
+
+    def busy(self):
+        """Needs the main loop's fast tick: the mouse is moving or a scroll is held."""
+        s = self.state
+        return bool(s['rightx'] or s['righty'] or s['leftshoulder'] or s['rightshoulder'])
 
     def fileno(self):
         return None
 
     def update(self, s):
+        # A bumper press scrolls straight away; holding it repeats (see tick).
+        for name, notch in (('leftshoulder', 1), ('rightshoulder', -1)):
+            if s[name] and not self.state[name]:
+                self.pointer.wheel(notch)
+                self.scroll_wait = self.SCROLL_REPEAT * 3
         self.state = dict(s)
         p = self.pointer
         for name, code in self.KEYS.items():
@@ -185,11 +204,19 @@ class KbmSink:
         p.syn()
 
     def tick(self, dt):
-        """Right stick moves the mouse continuously while held - called from the main loop."""
-        rx, ry = deadzone(self.state['rightx'], self.state['righty'], 0.12)
+        """Right stick moves the mouse continuously while held, held bumpers keep
+        scrolling - called from the main loop."""
+        s = self.state
+        if s['leftshoulder'] or s['rightshoulder']:
+            self.scroll_wait -= dt
+            if self.scroll_wait <= 0:
+                self.scroll_wait = self.SCROLL_REPEAT
+                self.pointer.wheel(int(s['leftshoulder']) - int(s['rightshoulder']))
+        rx, ry = deadzone(s['rightx'], s['righty'], 0.12)
         if rx or ry:
-            # Squared response curve: precise near the center, fast at full tilt.
-            speed = 1800.0 * dt
+            # Squared response curve: precise near the center, fast at full tilt - fast
+            # enough to cross a 4K screen in about 1.5 s.
+            speed = 2600.0 * dt
             self.pointer.move(rx * abs(rx) * speed, ry * abs(ry) * speed)
             return True
         return False
@@ -902,7 +929,7 @@ class Daemon:
         self.sel.register(sys.stdin.fileno(), selectors.EVENT_READ, 'stdin')
         last_scan = last_tick = time.monotonic()
         while self.running:
-            moving = any(s.state['rightx'] or s.state['righty'] for s in self.kbm_sinks)
+            moving = any(s.busy() for s in self.kbm_sinks)
             timeout = 0.008 if moving else 0.25
             for key, _ in self.sel.select(timeout):
                 obj = key.data

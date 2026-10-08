@@ -27,6 +27,7 @@ import { loadSettings } from './config'
 import { gamescopeArgs, inGamescopeSession, withGamescope } from './gamescope'
 import { appConfigDir } from './paths'
 import { addPlaySession } from './playtime'
+import { detectControllerMode } from './controllerSupport'
 import { getControllerMode, omniInputGameEnv, startOmniInput } from './omniInput'
 
 export interface RuntimeContext {
@@ -96,7 +97,9 @@ async function runThroughHeroic(
 
   await shutdownSteam(ctx.steam)
   await quitHeroic()
-  const input = await startOmniInput(getControllerMode(game.id), ctx.steam.root)
+  const setting = getControllerMode(game.id)
+  const mode = setting === 'auto' ? (await detectControllerMode(game)).mode : setting
+  const input = await startOmniInput(mode, ctx.steam.root)
   setHeroicSessionEnv(ctx.heroic, game.appId, {
     OMNILAUNCHER_GAME_ID: game.id,
     ...(input ? omniInputGameEnv(input) : {})
