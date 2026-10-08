@@ -32,6 +32,9 @@ export function hostEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     p.includes('/tmp/.mount_') || (!!appDir && p.startsWith(appDir))
 
   for (const key of APPIMAGE_VARS) delete env[key]
+  // Set when OmniLauncher's own binary runs as plain Node - any Electron app it starts
+  // (Heroic) would inherit it and exit on the spot.
+  delete env.ELECTRON_RUN_AS_NODE
   for (const key of PATH_LISTS) {
     const value = env[key]
     if (value === undefined) continue

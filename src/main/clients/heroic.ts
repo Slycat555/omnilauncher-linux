@@ -1,5 +1,14 @@
-import { execFile } from 'child_process'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { execFile, spawn } from 'child_process'
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync
+} from 'fs'
+import { homedir } from 'os'
 import { dirname, join } from 'path'
 import { promisify } from 'util'
 import type { GamePlatform, InstallProgressEvent, StoreKind, UnifiedGame } from '../../shared/types'
@@ -82,6 +91,13 @@ interface GogInstalledEntry {
   install_path: string
   install_size?: string
   platform?: string
+  executable?: string
+  is_dlc?: boolean
+  version?: string
+  buildId?: string
+  language?: string
+  installedDLCs?: string[]
+  installedWithDLCs?: boolean
 }
 
 function platformFrom(raw: string | undefined, isLinuxNative: boolean | undefined): GamePlatform {
@@ -186,13 +202,58 @@ export function markGogInstalled(
   const file = gogInstalledFilePath(det)
   if (!file) return
   const data = readJsonSafe<{ installed: GogInstalledEntry[] }>(file) ?? { installed: [] }
-  const entry: GogInstalledEntry = {
+  const entry = completeGogInstalledEntry(det, {
     appName: appId,
     install_path: installPath,
     platform
-  }
+  })
   data.installed = [...data.installed.filter((e) => e.appName !== appId), entry]
   writeFileSync(file, JSON.stringify(data, null, '\t'))
+}
+
+/**
+ * Fills in what Heroic's own install record has (see Heroic's importGame) from the gogdl
+ * manifest the download left behind. A bare appName/install_path/platform record is
+ * enough for OmniLauncher, but Heroic's first-launch setup reads `language` (an empty
+ * one throws "RangeError: invalid_argument" and the game never starts) and its updater
+ * reads `buildId`.
+ */
+function completeGogInstalledEntry(
+  det: HeroicDetection,
+  entry: GogInstalledEntry
+): GogInstalledEntry {
+  const manifestFile = gogdlManifestPath(det, entry.appName)
+  const manifest = manifestFile
+    ? readJsonSafe<{ buildId?: string; HGLInstallLanguage?: string; HGLdlcs?: { id: string }[] }>(
+        manifestFile
+      )
+    : null
+  const dlcs = (manifest?.HGLdlcs ?? []).map((d) => String(d.id))
+  return {
+    executable: '',
+    install_size: '',
+    is_dlc: false,
+    version: manifest?.buildId ?? '',
+    buildId: manifest?.buildId ?? '',
+    installedDLCs: dlcs,
+    installedWithDLCs: dlcs.length > 0,
+    ...entry,
+    // Never left empty - Heroic passes it to Intl.DisplayNames.
+    language: entry.language || manifest?.HGLInstallLanguage || 'en-US'
+  }
+}
+
+/** Completes the install records written before completeGogInstalledEntry existed. */
+export function repairGogInstalledEntries(det: HeroicDetection): void {
+  const file = gogInstalledFilePath(det)
+  if (!file) return
+  const data = readJsonSafe<{ installed: GogInstalledEntry[] }>(file)
+  if (!data?.installed?.length) return
+  const before = JSON.stringify(data.installed)
+  data.installed = data.installed.map((e) => completeGogInstalledEntry(det, e))
+  if (JSON.stringify(data.installed) !== before) {
+    writeFileSync(file, JSON.stringify(data, null, '\t'))
+  }
 }
 
 export function unmarkGogInstalled(det: HeroicDetection, appId: string): void {
@@ -877,15 +938,112 @@ export function heroicRunner(store: StoreKind): string | null {
   return null
 }
 
-/** argv that starts Heroic in the background (tray only, no window) and has it launch a
- *  game - Heroic then runs it exactly as if Play had been pressed there: its Proton, its
- *  prefix, its fixes, its playtime and cloud saves. */
-export function heroicLaunchArgv(det: HeroicDetection, game: UnifiedGame): string[] | null {
+function heroicCommand(det: HeroicDetection): string[] {
+  return det.variant === 'flatpak' ? ['flatpak', 'run', HEROIC_FLATPAK_APP] : ['heroic']
+}
+
+/** Heroic's main log. Every Heroic process rotates it at startup (heroic.log -> .old) -
+ *  including the short-lived second instance that hands a heroic:// link over - while
+ *  the running Heroic keeps writing to whichever file it opened, so both are read. */
+function heroicLogPaths(det: HeroicDetection): string[] {
+  const stateHome =
+    det.variant === 'flatpak'
+      ? join(homedir(), '.var', 'app', HEROIC_FLATPAK_APP, '.local', 'state')
+      : (process.env.XDG_STATE_HOME ?? join(homedir(), '.local', 'state'))
+  const log = join(stateHome, 'Heroic', 'logs', 'heroic.log')
+  return [`${log}.old`, log]
+}
+
+/** Whatever Heroic has logged since `since` (files last written before it are skipped). */
+function readHeroicLog(det: HeroicDetection, since: number): string {
+  let text = ''
+  for (const file of heroicLogPaths(det)) {
+    try {
+      if (statSync(file).mtimeMs >= since) text += readFileSync(file, 'utf-8')
+    } catch {
+      // not there yet
+    }
+  }
+  return text
+}
+
+function spawnHeroic(det: HeroicDetection, args: string[]): void {
+  const [cmd, ...prefix] = heroicCommand(det)
+  const child = spawn(cmd, [...prefix, '--no-gui', ...args], {
+    detached: true,
+    stdio: 'ignore',
+    env: hostEnv()
+  })
+  child.on('error', () => {})
+  child.unref()
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms))
+
+/**
+ * Has Heroic launch a game, headless (tray only, no window) - Heroic then runs it exactly
+ * as if Play had been pressed there: its Proton, its prefix, its fixes, its playtime and
+ * cloud saves. Resolves true once Heroic has logged that it's launching it.
+ *
+ * Heroic is started first and the heroic://launch link sent to it once it's up: given
+ * the link on a cold start, Heroic 2.22 handles it before its library has loaded, fails
+ * to find the game (an unhandled "reading 'getGame'" error) and does nothing at all.
+ */
+export async function launchThroughHeroic(
+  det: HeroicDetection,
+  game: UnifiedGame
+): Promise<boolean> {
   const runner = heroicRunner(game.store)
-  if (!runner || !det.present) return null
+  if (!runner || !det.present) return false
   const uri = `heroic://launch?appName=${encodeURIComponent(game.appId)}&runner=${runner}`
-  const heroic = det.variant === 'flatpak' ? ['flatpak', 'run', HEROIC_FLATPAK_APP] : ['heroic']
-  return [...heroic, '--no-gui', uri]
+  if (game.store === 'gog') {
+    ensureHeroicGogLogin(det)
+    repairGogInstalledEntries(det)
+  }
+
+  const startedAt = Date.now()
+  spawnHeroic(det, [])
+  // Up when its frontend is, plus a moment for the store libraries to load behind it.
+  let deadline = Date.now() + 60000
+  while (!readHeroicLog(det, startedAt).includes('Frontend Ready')) {
+    if (Date.now() > deadline) return false
+    await sleep(500)
+  }
+  await sleep(3000)
+
+  // Heroic logs "Launching <title> (<appName>)" as it starts the game.
+  const launching = (): boolean => readHeroicLog(det, startedAt).includes(`(${game.appId})`)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    // A second Heroic instance hands its arguments to the running one and exits.
+    const sentAt = Date.now()
+    spawnHeroic(det, [uri])
+    deadline = sentAt + 15000
+    while (Date.now() < deadline) {
+      await sleep(500)
+      if (launching()) return true
+    }
+    // The hand-over rotated the log again, so a retry can't see the first try's lines -
+    // only retry while Heroic is up and nothing of this game has started yet.
+    if (!(await isHeroicRunning())) return false
+  }
+  return false
+}
+
+/**
+ * Marks GOG as logged in for Heroic itself. OmniLauncher logs in through gogdl, which
+ * only writes the token (gog_store/auth.json); Heroic also keeps an isLoggedIn flag in
+ * gog_store/config.json, and without it Heroic skips loading its GOG library at startup -
+ * so it sees no GOG game as installed and answers every launch with "not installed".
+ */
+export function ensureHeroicGogLogin(det: HeroicDetection): void {
+  if (!det.configDir) return
+  const store = join(det.configDir, 'gog_store')
+  if (!existsSync(join(store, 'auth.json'))) return
+  const file = join(store, 'config.json')
+  const data = readJsonSafe<Record<string, unknown>>(file) ?? {}
+  if (data.isLoggedIn === true) return
+  data.isLoggedIn = true
+  writeFileSync(file, JSON.stringify(data, null, '\t'))
 }
 
 /** The environment variables OmniLauncher adds to a Heroic game for one session. */

@@ -1,9 +1,8 @@
-import { spawn } from 'child_process'
 import { readdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import type { LaunchStateEvent, UnifiedGame } from '../shared/types'
 import type { HeroicDetection, SteamDetection } from './clients/detect'
-import { heroicLaunchArgv, quitHeroic, setHeroicSessionEnv } from './clients/heroic'
+import { launchThroughHeroic, quitHeroic, setHeroicSessionEnv } from './clients/heroic'
 import {
   armSteamWindowSuppression,
   closeSteamWindow,
@@ -28,7 +27,6 @@ import { loadSettings } from './config'
 import { gamescopeArgs, inGamescopeSession, withGamescope } from './gamescope'
 import { appConfigDir } from './paths'
 import { addPlaySession } from './playtime'
-import { hostEnv } from './hostEnv'
 import { getControllerMode, omniInputGameEnv, startOmniInput } from './omniInput'
 
 export interface RuntimeContext {
@@ -90,8 +88,7 @@ async function runThroughHeroic(
   ctx: RuntimeContext,
   onState: StateCb
 ): Promise<void> {
-  const argv = heroicLaunchArgv(ctx.heroic, game)
-  if (!argv) {
+  if (!ctx.heroic.present) {
     runningIds.delete(game.id)
     onState({ gameId: game.id, running: false, error: 'Heroic Games Launcher not found.' })
     return
@@ -105,17 +102,19 @@ async function runThroughHeroic(
     ...(input ? omniInputGameEnv(input) : {})
   })
 
-  const [cmd, ...args] = argv
-  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', env: hostEnv() })
-  child.on('error', () => {})
-  child.unref()
-
-  const startedAt = Date.now()
   let seenAt = 0
   let goneTicks = 0
+  // Set once the game has been handed to Heroic; finish() may run before that.
+  const timer: { poll?: NodeJS.Timeout } = {}
+  if (!(await launchThroughHeroic(ctx.heroic, game))) {
+    await finish("Heroic didn't launch the game - try launching it from Heroic to see why.")
+    return
+  }
+
+  const startedAt = Date.now()
   // Heroic may first have to fetch a Proton/runtime update before the game starts.
   const START_TIMEOUT_MS = 180000
-  const poll = setInterval(() => {
+  timer.poll = setInterval(() => {
     if (isTaggedGameRunning(game.id)) {
       if (!seenAt) seenAt = Date.now()
       goneTicks = 0
@@ -132,7 +131,7 @@ async function runThroughHeroic(
   }, 3000)
 
   async function finish(error?: string): Promise<void> {
-    clearInterval(poll)
+    clearInterval(timer.poll)
     input?.stop()
     try {
       setHeroicSessionEnv(ctx.heroic, game.appId, null)

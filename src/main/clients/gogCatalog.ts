@@ -56,8 +56,12 @@ interface GamesDbData {
   }
 }
 
-/** Matches the HeroicCacheGame shape readGogLibrary already parses in heroic.ts. */
+/** Heroic's own GameInfo shape for a GOG game (gogToUnifiedInfo in Heroic) - every field
+ *  Heroic relies on, not just what readGogLibrary in heroic.ts reads. With `runner`
+ *  missing, Heroic can't find the game's library manager and every launch of it from
+ *  Heroic (including heroic://launch) fails silently. */
 interface CachedGogGame {
+  runner: 'gog'
   app_name: string
   title: string
   art_cover?: string
@@ -68,7 +72,12 @@ interface CachedGogGame {
   canRunOffline: boolean
   is_linux_native: boolean
   is_mac_native: boolean
-  extra: { about: { description?: string }; genres: string[] }
+  extra: { about: { description?: string; shortDescription: string }; reqs: []; genres: string[] }
+  cloud_save_enabled: boolean
+  folder_name: string
+  install: { is_dlc: boolean }
+  is_installed: boolean
+  save_folder: string
 }
 
 function formatImage(urlFormat: string | undefined, ext: string): string | undefined {
@@ -140,6 +149,7 @@ function toCachedGame(entry: GalaxyLibraryEntry, info: GamesDbData): CachedGogGa
   const background = formatImage(info.game.background?.url_format, 'webp')
   const artCover = formatImage(info.game.logo?.url_format, 'jpg') ?? background
   return {
+    runner: 'gog',
     app_name: String(info.external_id ?? entry.external_id),
     title: (info.title?.['*'] || info.game.title?.['*'] || '').trim(),
     art_cover: artCover,
@@ -151,9 +161,15 @@ function toCachedGame(entry: GalaxyLibraryEntry, info: GamesDbData): CachedGogGa
     is_linux_native: !!info.supported_operating_systems?.some((os) => os.slug === 'linux'),
     is_mac_native: !!info.supported_operating_systems?.some((os) => os.slug === 'osx'),
     extra: {
-      about: { description: info.summary?.['*'] },
+      about: { description: info.summary?.['*'], shortDescription: '' },
+      reqs: [],
       genres: (info.game.genres ?? []).map((g) => g.name?.['*']).filter((g): g is string => !!g)
-    }
+    },
+    cloud_save_enabled: false,
+    folder_name: '',
+    install: { is_dlc: false },
+    is_installed: false,
+    save_folder: ''
   }
 }
 
