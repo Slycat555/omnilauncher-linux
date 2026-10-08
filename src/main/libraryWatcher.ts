@@ -9,10 +9,14 @@ import {
 } from './clients/steam'
 
 const POLL_MS = 3000
+/** While a game runs, installs are rare and the game deserves the I/O. */
+const POLL_IN_GAME_MS = 15000
 
 interface WatcherOptions {
   steam: SteamDetection
   heroic: HeroicDetection
+  /** True while a game is running - polling slows down then. */
+  isGameRunning: () => boolean
   /** True for installs OmniLauncher itself is running - those report their own progress. */
   isTracked: (gameId: string) => boolean
   onLibraryChanged: () => void
@@ -127,6 +131,9 @@ export function startLibraryWatcher(opts: WatcherOptions): void {
     lastSignature = signature
   }
 
-  tick()
-  setInterval(tick, POLL_MS)
+  const loop = (): void => {
+    tick()
+    setTimeout(loop, opts.isGameRunning() ? POLL_IN_GAME_MS : POLL_MS)
+  }
+  loop()
 }

@@ -186,41 +186,54 @@ async function runThroughSteam(
   // for the "reaper SteamLaunch AppId=..." process Steam itself launches every game
   // (native or Proton) under, and only report `running: false` once it's gone.
   const startedAt = Date.now()
+  let runningSince = 0
+  // Steam's "Launching..." and shader-cache dialogs only appear around launch, so they're
+  // only hunted for until the game has been up a little while - polling wmctrl/xdotool
+  // every 500 ms for the whole session made the compositor do work every tick, which
+  // showed up as periodic stutter in games. After that, a cheap liveness check every 3 s.
+  const LAUNCH_PHASE_MS = 20000
   const tick = (): boolean => {
-    // -silent keeps Steam's main library window from opening on its own, but it does
-    // nothing about the transient "Launching..." dialog that appears immediately
-    // after dispatch, well before the reaper process (isSteamGameRunning's signal)
-    // exists - that dialog was previously only closed AFTER the game was confirmed
-    // running, leaving a several-second gap where it sat on top of everything,
-    // including our own NFC launch overlay. Closing it unconditionally on every tick,
-    // same as the shader-cache dialog below, covers that whole window instead of just
-    // the part after the game's actually up.
-    closeSteamWindow()
-
-    // A Proton title's first run (or any run after a driver update) can sit on
-    // Steam's own "Vulkan Shader Cache" dialog for anywhere from seconds to several
-    // minutes before the game's own window ever appears - close it on sight, the same
-    // way an install's confirmation dialog gets backgrounded once it's served its
-    // purpose. Checked every tick since there's no single moment to catch it at.
-    closeVulkanShaderWindow()
-
-    return isSteamGameRunning(reaperAppId)
+    const inLaunchPhase = !runningSince || Date.now() - runningSince < LAUNCH_PHASE_MS
+    if (inLaunchPhase) {
+      // -silent keeps Steam's library window shut, but not the transient "Launching..."
+      // dialog, nor the "Vulkan Shader Cache" one a Proton title can sit on before its
+      // own window appears - both are minimized as soon as they show up.
+      closeSteamWindow()
+      closeVulkanShaderWindow()
+    }
+    const running = isSteamGameRunning(reaperAppId)
+    if (running && !runningSince) runningSince = Date.now()
+    return running
   }
-  // Run once immediately (not just on the first interval tick) so the "Launching..."
-  // dialog gets a close attempt right away instead of waiting out a full interval -
-  // it can render within a couple hundred ms of dispatch.
   tick()
+  let launchPhaseDone = false
   const poll = setInterval(() => {
-    if (tick()) return
-    // Steam can take a few seconds to actually spawn the reaper process after the URI
-    // is dispatched - a not-found reading in that window is expected, not proof the
-    // game exited, so keep polling instead of declaring "not running" too early.
+    const running = tick()
+    if (running && !launchPhaseDone && Date.now() - runningSince >= LAUNCH_PHASE_MS) {
+      launchPhaseDone = true
+      disarmSteamWindowSuppression()
+      // Re-schedule at the slower in-game rate.
+      clearInterval(poll)
+      const slow = setInterval(() => {
+        if (tick()) return
+        clearInterval(slow)
+        finish()
+      }, 3000)
+      return
+    }
+    if (running) return
+    // Steam can take a few seconds to spawn the reaper after the URI is dispatched - a
+    // not-found reading in that window isn't proof the game exited.
     if (Date.now() - startedAt < 8000) return
     clearInterval(poll)
+    finish()
+  }, 500)
+
+  function finish(): void {
     disarmSteamWindowSuppression()
     runningIds.delete(game.id)
     onState({ gameId: game.id, running: false })
-  }, 500)
+  }
 }
 
 /** Double-quotes a value for a Steam launch-options line (shell-style). */

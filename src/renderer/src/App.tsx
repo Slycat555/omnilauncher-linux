@@ -14,7 +14,7 @@ import { WineLockOverlay } from './components/WineLockOverlay'
 import type { StoreFilter } from './store'
 import { useAppStore } from './store'
 import { keyNavAction, typingInField } from './keyNav'
-import { installDesktopLayoutGuard, useGamepadNav } from './useGamepadNav'
+import { installDesktopLayoutGuard, setGamepadPollingPaused, useGamepadNav } from './useGamepadNav'
 
 function App(): React.JSX.Element {
   const {
@@ -72,6 +72,11 @@ function App(): React.JSX.Element {
   }, [init])
 
   useEffect(() => installDesktopLayoutGuard(), [])
+
+  // No controller polling while a game has the screen (see setGamepadPollingPaused).
+  useEffect(() => {
+    setGamepadPollingPaused(uiLocked || anyGameRunning)
+  }, [uiLocked, anyGameRunning])
 
   // `inert` stops new focus, but whatever already had it (the search box, a button)
   // could otherwise keep receiving keystrokes meant for the game.

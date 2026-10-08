@@ -833,8 +833,9 @@ button {
 .wine-lock-overlay {
   position: fixed;
   inset: 28px 0 0 0;
-  background: rgba(0, 0, 0, 0.82);
-  backdrop-filter: blur(6px);
+  /* Solid and static: this is on screen exactly while a game runs, so it must cost the
+     GPU nothing - no backdrop blur, no looping animation. */
+  background: var(--bg-0);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -854,8 +855,6 @@ button {
   height: 14px;
   border-radius: 50%;
   background: var(--action-play);
-  box-shadow: 0 0 0 0 rgba(0, 200, 83, 0.6);
-  animation: wine-lock-pulse 1.6s ease-out infinite;
 }
 @keyframes wine-lock-pulse {
   to {

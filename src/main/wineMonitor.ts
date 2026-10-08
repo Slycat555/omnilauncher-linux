@@ -5,6 +5,9 @@ import type { WineActivity } from '../shared/types'
 import { appConfigDir } from './paths'
 
 const POLL_MS = 2000
+/** Slower while a game runs - it only needs to notice the game closing, and each scan
+ *  spawns ps/cat on the host. */
+const POLL_IN_GAME_MS = 5000
 
 /** Wine's own background processes and launcher plumbing - present whenever a prefix
  *  is up, including while Steam runs a game's install scripts or Heroic runs winetricks,
@@ -181,6 +184,9 @@ export function startWineMonitor(onChange: (activity: WineActivity) => void): vo
     current = next
     onChange(current)
   }
-  void tick()
-  timer = setInterval(() => void tick(), POLL_MS)
+  const loop = async (): Promise<void> => {
+    await tick()
+    timer = setTimeout(() => void loop(), current.active ? POLL_IN_GAME_MS : POLL_MS)
+  }
+  void loop()
 }

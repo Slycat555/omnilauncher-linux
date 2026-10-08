@@ -376,6 +376,10 @@ export function readSteamInstallState(steamRoot: string, appId: string): SteamIn
  *  -b add,hidden`) is silently a no-op on this compositor (window stayed fully visible,
  *  _NET_WM_STATE never gained _HIDDEN), while xdotool's minimize actually works
  *  (confirmed via WM_STATE reading "Iconic" afterward). */
+/** Windows already minimized - minimizing again every poll made KWin process a state
+ *  change each time for no reason. */
+const minimizedWindows = new Set<string>()
+
 function hideMatchingWindows(pred: (line: string) => boolean): void {
   try {
     execSync('wmctrl -l -x', { stdio: ['ignore', 'pipe', 'ignore'] })
@@ -384,7 +388,8 @@ function hideMatchingWindows(pred: (line: string) => boolean): void {
       .filter(pred)
       .forEach((line) => {
         const id = line.trim().split(/\s+/)[0]
-        if (id) {
+        if (id && !minimizedWindows.has(id)) {
+          minimizedWindows.add(id)
           try {
             execSync(`xdotool windowminimize ${id}`, { stdio: 'ignore' })
           } catch {
@@ -478,6 +483,8 @@ function windowMatchesSuppressTarget(id: string): boolean {
 }
 
 export function armSteamWindowSuppression(): void {
+  // A new launch: windows the user has since reopened may be minimized again.
+  minimizedWindows.clear()
   suppressionArmed = true
   if (watcherStarted) return
   watcherStarted = true

@@ -23,6 +23,17 @@ const REPEAT_MS = 220
 /** When the controller was last actually used (a button held, a stick or D-pad pushed). */
 let lastGamepadActivity = -Infinity
 
+/** While a game is running the launcher doesn't need the controller at all - polling it
+ *  every display frame (240 times a second here) kept waking the renderer and GPU process
+ *  for nothing while the game was trying to hold its frame rate. */
+let pollingPaused = false
+export function setGamepadPollingPaused(paused: boolean): void {
+  pollingPaused = paused
+}
+
+/** ~60 polls a second is plenty for menu navigation, whatever the display refresh rate. */
+const POLL_INTERVAL_MS = 16
+
 /**
  * With Steam Input on, Steam applies its Desktop Layout to the controller whenever no Steam
  * game is focused - it injects mouse movement, clicks and key presses (A -> Enter, B ->
@@ -66,7 +77,19 @@ export function useGamepadNav(handlers: Handlers): void {
     let lastMove = 0
     const prevButtons: boolean[] = []
 
+    let lastPoll = 0
     function poll(): void {
+      if (pollingPaused) {
+        // Check back occasionally instead of every frame until the game has closed.
+        raf = window.setTimeout(() => (raf = requestAnimationFrame(poll)), 500)
+        return
+      }
+      const nowMs = performance.now()
+      if (nowMs - lastPoll < POLL_INTERVAL_MS) {
+        raf = requestAnimationFrame(poll)
+        return
+      }
+      lastPoll = nowMs
       const pads = navigator.getGamepads ? navigator.getGamepads() : []
       const pad = pads[0]
       if (pad) {
@@ -135,6 +158,9 @@ export function useGamepadNav(handlers: Handlers): void {
     }
 
     raf = requestAnimationFrame(poll)
-    return () => cancelAnimationFrame(raf)
+    return () => {
+      cancelAnimationFrame(raf)
+      clearTimeout(raf)
+    }
   }, [])
 }

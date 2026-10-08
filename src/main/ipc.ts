@@ -357,6 +357,7 @@ export function registerIpcHandlers(): void {
         steam,
         heroic,
         isTracked: (gameId) => installManager.isBusy(gameId),
+        isGameRunning: () => getWineActivity().active,
         onLibraryChanged: async () => broadcast('library:updated', await doRefresh()),
         onProgress: (evt) => broadcast('install:progress', evt)
       })
