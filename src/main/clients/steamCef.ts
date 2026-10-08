@@ -63,7 +63,7 @@ async function findSharedContext(): Promise<string | null> {
 
 /** Runs one expression in Steam's UI context and returns its (JSON-serializable)
  *  value, awaiting it if it's a promise. */
-async function evaluateInSteam<T>(expression: string, timeoutMs: number): Promise<T | undefined> {
+export async function evaluateInSteam<T>(expression: string, timeoutMs: number): Promise<T | undefined> {
   const wsUrl = await findSharedContext()
   if (!wsUrl || typeof WebSocket === 'undefined') return undefined
 
@@ -250,10 +250,23 @@ export async function steamCancelInstall(
  */
 export async function ensureSteamAutoAccept(): Promise<boolean> {
   const script = `(() => {
-    if (window.__omniLauncherAutoAccept) return true;
+    // Versioned: a handler left registered by an older OmniLauncher (Steam keeps running
+    // across launcher updates) is swapped for this one.
+    const VERSION = 3;
+    if (window.__omniLauncherAutoAcceptVersion === VERSION) return true;
+    try { window.__omniLauncherAutoAccept?.unregister?.(); } catch (e) {}
+    try { window.__omniLauncherActionStart?.unregister?.(); } catch (e) {}
+    window.__omniLauncherAutoAcceptVersion = VERSION;
+    // The user-request callback's second argument isn't the action id - Steam's own UI
+    // answers with the id it got when the action started, so track those per game.
+    const actions = new Map();
+    window.__omniLauncherActionStart = SteamClient.Apps.RegisterForGameActionStart(
+      (actionId, gameId) => actions.set(String(gameId), actionId)
+    );
     window.__omniLauncherAutoAccept = SteamClient.Apps.RegisterForGameActionUserRequest(
-      async (gameId, gameActionId, request) => {
-        const go = (value) => SteamClient.Apps.ContinueGameAction(gameActionId, value);
+      async (gameId, second, request, detail) => {
+        const actionId = actions.get(String(gameId)) ?? second;
+        const go = (value) => SteamClient.Apps.ContinueGameAction(actionId, value);
         const appId = parseInt(gameId);
         try {
           switch (request) {
@@ -273,6 +286,17 @@ export async function ensureSteamAutoAccept(): Promise<boolean> {
               return go('KickOtherSession');
             case 'ShowLaunchOption':
               return go('0');
+            // Steam Cloud / controller-config sync trouble before launch - answered the way
+            // Steam's own dialog's "Play anyway" does: play without syncing, which changes
+            // neither the local nor the cloud saves (a conflict is left for Steam to offer
+            // again next time, never resolved by guessing a side).
+            case 'SynchronizingCloud':
+            case 'SynchronizingControllerConfig':
+              if (detail === 'pendingcloudsessions') return go('IgnorePendingCloudSessions');
+              return go('IgnoreCloud');
+            default:
+              // Anything else Steam stops to ask: carry on, as its own "continue" does.
+              return go(request);
           }
         } catch (e) {}
       }
