@@ -1,6 +1,6 @@
 {
   "name": "omnilauncher-linux",
-  "version": "1.0.0",
+  "version": "2.9.0",
   "description": "An Electron application with React and TypeScript",
   "main": "./out/main/index.js",
   "desktopName": "omnilauncher-linux.desktop",

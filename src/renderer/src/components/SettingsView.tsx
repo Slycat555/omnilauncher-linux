@@ -272,6 +272,18 @@ export function SettingsView({ detection }: { detection: DetectionResult | null 
             a couch. 100% is normal size.
           </span>
         </div>
+        <ToggleRow
+          label="Start in Big Picture mode"
+          hint="Open fullscreen in the controller-friendly Big Picture view every time the app starts. Toggle it any time with F11, the Start button, or the TV icon in the title bar."
+          checked={current.startInBigPicture}
+          onChange={(v) => update({ startInBigPicture: v })}
+        />
+        <ToggleRow
+          label="Run games in Gamescope"
+          hint="Launch every game inside Gamescope, fullscreen at your monitor's native resolution and highest refresh rate (detected automatically). Turning this off removes Gamescope from your games' launch options again."
+          checked={current.useGamescope}
+          onChange={(v) => update({ useGamescope: v })}
+        />
       </div>
 
       <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>

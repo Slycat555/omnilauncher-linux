@@ -7,7 +7,9 @@ const DEFAULTS: AppSettings = {
   steamWebApiKey: '',
   steamId64: '',
   enabledStores: { epic: false, amazon: false },
-  uiScale: 1
+  uiScale: 1,
+  startInBigPicture: false,
+  useGamescope: false
 }
 
 let cached: AppSettings | null = null

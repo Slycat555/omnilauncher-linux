@@ -1,16 +1,24 @@
 import { execFile } from 'child_process'
+import { readFileSync } from 'fs'
+import { join } from 'path'
 import type { WineActivity } from '../shared/types'
+import { appConfigDir } from './paths'
 
 const POLL_MS = 2000
 
-/** Wine's own background processes, plus helpers Proton/Steam/wine-mono spawn inside
- *  every prefix - these prove Wine is running, but naming them in the UI would be
- *  meaningless ("services.exe is running"), so they're excluded from the display list. */
-const WINE_SYSTEM_EXES = new Set([
+/** Wine's own background processes and launcher plumbing - present whenever a prefix
+ *  is up, including while Steam runs a game's install scripts or Heroic runs winetricks,
+ *  so they never count as "a game is running". */
+const NON_GAME_EXES = new Set([
   'conhost.exe',
+  'cmd.exe',
   'explorer.exe',
   'mscorsvw.exe',
+  'msiexec.exe',
   'plugplay.exe',
+  'reg.exe',
+  'regedit.exe',
+  'regsvr32.exe',
   'rpcss.exe',
   'rundll32.exe',
   'services.exe',
@@ -19,16 +27,23 @@ const WINE_SYSTEM_EXES = new Set([
   'svchost.exe',
   'tabtip.exe',
   'wineboot.exe',
+  'winecfg.exe',
   'winedevice.exe',
   'winemenubuilder.exe',
   'xalia.exe'
 ])
 
-/** Matches the `proton` script itself (run by Steam, umu-launcher, Heroic, Lutris...),
- *  which exists for the whole session including the seconds before wineserver starts. */
-const PROTON_SCRIPT = /(^|\/)proton\s+(run|waitforexitandrun|runinprefix|getcompatpath)\b/
+/** Installers, redistributables, uninstallers and crash reporters - Steam runs these
+ *  through Proton after a download (install scripts), and they're never the game. */
+const NON_GAME_EXE_RE =
+  /^(iscriptevaluator|vc_?redist|vcredist|dxsetup|dxwebsetup|dotnet|ndp\d|unins\d*|setup|install|crashpad|.*crashhandler|.*crashreport|steamerrorreporter|easyanticheat.*setup|uplayinstaller|epicinstaller)/i
 
-let current: WineActivity = { active: false, processes: [] }
+/** Where a real game's executable can't be: Wine's own system folders, Steam's helper
+ *  folder inside the prefix, redistributable folders, temp and the winetricks cache. */
+const NON_GAME_PATH_RE =
+  /\\windows\\(system32|syswow64)\\|\\program files( \(x86\))?\\steam\\|_commonredist|\\temp\\|[\\/]\.cache[\\/]|winetricks/i
+
+let current: WineActivity = { active: false, gameIds: [] }
 let inactiveStreak = 0
 let timer: NodeJS.Timeout | null = null
 
@@ -36,68 +51,125 @@ export function getWineActivity(): WineActivity {
   return current
 }
 
-/** `ps` lists every process on the host when run natively, but inside the Flatpak
- *  sandbox it only sees the sandbox's own processes - a game launched by Steam/Heroic
- *  would be invisible there. The Flatpak build already has
- *  --talk-name=org.freedesktop.Flatpak, so flatpak-spawn --host reaches the real list. */
-function listProcesses(): Promise<string> {
-  const psArgs = ['-eo', 'stat=,comm=,args=']
-  const [bin, args] = process.env.FLATPAK_ID
-    ? ['flatpak-spawn', ['--host', 'ps', ...psArgs]]
-    : ['ps', psArgs]
+/** `ps` and /proc list every process on the host when run natively, but inside the
+ *  Flatpak sandbox only the sandbox's own - a game launched by Steam/Heroic would be
+ *  invisible there. The Flatpak build already has --talk-name=org.freedesktop.Flatpak,
+ *  so flatpak-spawn --host reaches the real ones. */
+function runOnHost(bin: string, args: string[]): Promise<string> {
+  const [cmd, cmdArgs] = process.env.FLATPAK_ID
+    ? ['flatpak-spawn', ['--host', bin, ...args]]
+    : [bin, args]
   return new Promise((resolve) => {
-    execFile(bin, args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
-      // A failed scan is treated as "nothing found" rather than locking the UI forever
+    execFile(cmd, cmdArgs, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout) => {
+      // A failed read is treated as "nothing found" rather than locking the UI forever
       // on an error the user can't do anything about.
       resolve(err ? '' : stdout)
     })
   })
 }
 
-function scan(output: string): WineActivity {
-  let active = false
-  const names = new Set<string>()
+/** Whether a game launcher started this process, from markers every launcher passes
+ *  down through Proton (verified reading a umu-launched Wine process's environment):
+ *  Steam sets a numeric SteamGameId for its games (umu sets the literal "default", so
+ *  that alone proves nothing), OmniLauncher's own launches carry OMNILAUNCHER_GAME_ID,
+ *  and Heroic/umu set GAMEID - except for Heroic's winetricks runs. */
+/** Shortcut app id -> OmniLauncher game id, for GOG games launched through Steam. */
+function shortcutGameIds(): Map<string, string> {
+  try {
+    const map = JSON.parse(readFileSync(join(appConfigDir(), 'steam-shortcuts.json'), 'utf-8'))
+    return new Map(Object.entries(map).map(([gameId, appId]) => [String(appId), gameId]))
+  } catch {
+    return new Map()
+  }
+}
 
-  for (const line of output.split('\n')) {
-    const m = line.trim().match(/^(\S+)\s+(\S+)\s*(.*)$/)
+/** Steam's id for an app - a plain app id, or a non-Steam shortcut's (mapped back to the
+ *  GOG game it launches). Shortcut *game* ids are 64-bit: the app id is the high 32 bits. */
+function steamAppGameId(id: string, shortcuts: Map<string, string>): string {
+  const appId = id.length > 10 ? String(BigInt(id) >> 32n) : id
+  return shortcuts.get(appId) ?? `steam:${appId}`
+}
+
+/** Which library game launched this process, from markers every launcher passes down
+ *  through Proton (verified reading a umu-launched Wine process's environment), or null
+ *  when it isn't a game launch at all (e.g. Heroic's winetricks). 'unknown' = a game, but
+ *  not one we can match to the library. */
+function launchedGameId(environ: string, shortcuts: Map<string, string>): string | null {
+  const env = new Map<string, string>()
+  for (const entry of environ.split('\0')) {
+    const eq = entry.indexOf('=')
+    if (eq > 0) env.set(entry.slice(0, eq), entry.slice(eq + 1))
+  }
+  const own = env.get('OMNILAUNCHER_GAME_ID')
+  if (own) return own
+  // Steam's own games and shortcuts set a numeric SteamGameId; umu sets the literal
+  // "default", which identifies nothing.
+  const steamGameId = env.get('SteamGameId') ?? ''
+  if (/^[1-9]\d*$/.test(steamGameId)) return steamAppGameId(steamGameId, shortcuts)
+  const umuId = env.get('GAMEID') ?? env.get('UMU_ID')
+  if (!umuId || umuId.startsWith('winetricks')) return null
+  const store = env.get('STORE')
+  const numeric = umuId.match(/^umu-(\d+)$/)?.[1]
+  if (numeric && store === 'gog') return `gog:${numeric}`
+  return 'unknown'
+}
+
+async function scan(): Promise<WineActivity> {
+  const shortcuts = shortcutGameIds()
+  const gameIds = new Set<string>()
+  const candidates: string[] = []
+  for (const line of (await runOnHost('ps', ['-eo', 'pid=,stat=,comm=,args='])).split('\n')) {
+    const m = line.trim().match(/^(\d+)\s+(\S+)\s+(\S+)\s*(.*)$/)
     if (!m) continue
-    const [, stat, comm, args] = m
+    const [, pid, stat, comm, args] = m
     if (stat.startsWith('Z')) continue // zombies are already dead, just not reaped yet
 
-    const lowerComm = comm.toLowerCase()
-    // comm is truncated to 15 chars by the kernel, so wine64-preloader shows up as
-    // "wine64-preloade" - matching the prefix covers wine, wine64, wineserver and both
-    // preloaders regardless.
-    const isWineBinary = lowerComm.startsWith('wine')
-    // Every Windows process under Wine shows its .exe name as comm (e.g. "Apotheon.exe").
-    // Long names lose the ".exe" to the 15-char truncation, but wineserver is always
-    // running alongside them anyway, so the session is still detected.
-    const isWindowsExe = lowerComm.endsWith('.exe')
-    const isProtonScript = PROTON_SCRIPT.test(args)
+    // Steam runs every game it launches - native Linux or Proton, Steam app or non-Steam
+    // shortcut - under "reaper SteamLaunch AppId=<id>", so that alone identifies it.
+    const reaper = args.match(/\breaper\b.*\bSteamLaunch\b.*\bAppId=(\d+)/)
+    if (reaper) {
+      gameIds.add(steamAppGameId(reaper[1], shortcuts))
+      continue
+    }
 
-    if (!isWineBinary && !isWindowsExe && !isProtonScript) continue
-    active = true
-    if (isWindowsExe && !WINE_SYSTEM_EXES.has(lowerComm)) names.add(comm)
+    const lower = comm.toLowerCase()
+    // Every Windows process under Wine shows its .exe name as comm (e.g. "Apotheon.exe").
+    // The kernel truncates comm to 15 chars, so a long name loses its ".exe" - then the
+    // Wine-style path at the start of args (C:\..., Z:\...) is checked instead. Matching
+    // ".exe" anywhere in args would also catch the launcher scripts themselves
+    // ("proton waitforexitandrun Game.exe").
+    const isExe =
+      lower.endsWith('.exe') || (comm.length === 15 && /^[a-z]:\\.*?\.exe\b/i.test(args))
+    if (!isExe) continue
+    if (NON_GAME_EXES.has(lower) || NON_GAME_EXE_RE.test(lower)) continue
+    if (NON_GAME_PATH_RE.test(args)) continue
+    candidates.push(pid)
   }
 
-  return { active, processes: [...names].sort((a, b) => a.localeCompare(b)) }
+  for (const pid of candidates) {
+    const id = launchedGameId(await runOnHost('cat', [`/proc/${pid}/environ`]), shortcuts)
+    if (id) gameIds.add(id)
+  }
+  // A known game makes an 'unknown' entry for the same session redundant.
+  if (gameIds.size > 1) gameIds.delete('unknown')
+  return { active: gameIds.size > 0, gameIds: [...gameIds].sort() }
 }
 
 function sameActivity(a: WineActivity, b: WineActivity): boolean {
   return (
     a.active === b.active &&
-    a.processes.length === b.processes.length &&
-    a.processes.every((p, i) => p === b.processes[i])
+    a.gameIds.length === b.gameIds.length &&
+    a.gameIds.every((p, i) => p === b.gameIds[i])
   )
 }
 
-/** Polls for any Wine/Proton process on the system - not just games this app launched,
- *  since a game started from Steam, Heroic or Lutris directly is just as able to receive
- *  a stray click or controller press meant for the launcher. */
+/** Polls for a real Windows game running under Wine/Proton - launched by Steam, Heroic or
+ *  this app, not just games this app launched itself - while ignoring Wine activity that
+ *  isn't a game (install scripts, winetricks, redistributables, an idle wineserver). */
 export function startWineMonitor(onChange: (activity: WineActivity) => void): void {
   if (timer) return
   const tick = async (): Promise<void> => {
-    const next = scan(await listProcesses())
+    const next = await scan()
     if (!next.active && current.active) {
       // A game can briefly have no Wine process at all while a launcher .exe hands off
       // to the real game, or while Proton restarts wineserver - require two empty scans

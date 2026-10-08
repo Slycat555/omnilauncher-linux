@@ -11,7 +11,9 @@ import {
   runnerEnv,
   type HeroicDetection
 } from './detect'
+import { gogdl64BitCommand } from './gogdlWrapper'
 import { compatToolsDir, downloadLatestGEProton } from './protonGE'
+import { hostEnv } from '../hostEnv'
 
 const execFileP = promisify(execFile)
 
@@ -35,7 +37,7 @@ async function runJson<T>(
   if (!bin) return null
   try {
     const { stdout } = await execFileP(bin, args, {
-      env: { ...process.env, ...env },
+      env: hostEnv(env),
       timeout: timeoutMs,
       maxBuffer: 64 * 1024 * 1024
     })
@@ -147,7 +149,14 @@ export async function readGogLibrary(det: HeroicDetection): Promise<UnifiedGame[
       const installedPlatform = installed
         ? platformFrom(inst?.platform ?? g.install?.platform, false)
         : undefined
-      return toUnified('gog', g, installed, installed ? path : undefined, !!det.gogdlBin, installedPlatform)
+      return toUnified(
+        'gog',
+        g,
+        installed,
+        installed ? path : undefined,
+        !!det.gogdlBin,
+        installedPlatform
+      )
     })
 }
 
@@ -206,15 +215,23 @@ export function buildGogInstallCommand(
   // directory - see heroicDefaultInstallPath's doc comment for why that split caused
   // real Heroic to show these exact titles as "Game not available".
   const target = join(heroicDefaultInstallPath(det), 'GOG', sanitizeFolderName(game.title))
+  // Through the 64-bit-only wrapper - see gogdlWrapper.ts.
+  const runner = gogdl64BitCommand(det.gogdlBin)
   return {
-    bin: det.gogdlBin,
+    bin: runner.bin,
+    // gogdl's --path is the PARENT folder: it creates the game's own folder (named from
+    // GOG's installDirectory) inside it. Passing the game folder itself nested the files
+    // one level too deep (GOG/Apotheon/Apotheon) while the install was recorded one level
+    // up, so nothing could find the game afterwards. resolveGogInstallDir() finds the
+    // folder gogdl actually created once the download is done.
     args: [
+      ...runner.prefixArgs,
       '--auth-config-path',
       auth,
       'download',
       game.appId,
       '--path',
-      target,
+      dirname(target),
       '--platform',
       'windows'
     ],
@@ -295,6 +312,16 @@ export function clearStaleGogManifest(det: HeroicDetection, appId: string): void
   }
 }
 
+/** The folder a GOG game actually landed in: the one holding its goggame-<id>.info, under
+ *  the GOG library folder (gogdl names it after GOG's installDirectory, which can differ
+ *  from the store title) - falls back to `expected` when nothing is found. */
+export function resolveGogInstallDir(expected: string, appId: string): string {
+  const info = `goggame-${appId}.info`
+  if (existsSync(join(expected, info))) return expected
+  const nested = findFilesShallow(expected, info)[0] ?? findFilesShallow(dirname(expected), info)[0]
+  return nested ? dirname(nested) : expected
+}
+
 function findFilesShallow(root: string, filename: string): string[] {
   const found: string[] = []
   try {
@@ -317,6 +344,24 @@ function findFilesShallow(root: string, filename: string): string[] {
  * resolved runtime directly against GOG's own play-task executable instead of going
  * through gogdl for this one step.
  */
+/**
+ * The SDL controller mappings Steam has stored (config.vdf "SDL_GamepadBind" - one line per
+ * controller, e.g. the 8BitDo Ultimate 2C), passed to non-Steam launches the same way Steam
+ * passes them to its own games. Without it, Proton's SDL has no mapping for a controller it
+ * doesn't know, exposes it as a generic joystick in raw axis order, and games read the
+ * sticks as the wrong axes (horizontal right stick moving the camera vertically, etc.).
+ */
+function steamControllerMappings(steamRoot: string | null): NodeJS.ProcessEnv {
+  if (!steamRoot) return {}
+  try {
+    const vdf = readFileSync(join(steamRoot, 'config', 'config.vdf'), 'utf-8')
+    const binds = vdf.match(/"SDL_GamepadBind"\s+"([^"]*)"/)?.[1]?.trim()
+    return binds ? { SDL_GAMECONTROLLERCONFIG: binds } : {}
+  } catch {
+    return {}
+  }
+}
+
 export function buildGogLaunchCommand(
   det: HeroicDetection,
   game: UnifiedGame,
@@ -333,6 +378,24 @@ export function buildGogLaunchCommand(
 
   if (!wine) return null
   if (wine.type === 'proton') {
+    // Through umu, exactly like Heroic: it runs Proton inside Valve's Steam Runtime
+    // container, which Proton is built for. Running the proton script bare on the host
+    // (the fallback below) skips that runtime and can fail to start the game.
+    const umu = det.configDir ? join(det.configDir, 'tools', 'runtimes', 'umu', 'umu_run.py') : null
+    if (umu && existsSync(umu)) {
+      return {
+        bin: 'python3',
+        args: [umu, exe],
+        env: {
+          ...det.env,
+          WINEPREFIX: wine.prefix,
+          PROTONPATH: dirname(wine.bin),
+          GAMEID: `umu-${game.appId}`,
+          STORE: 'gog',
+          ...steamControllerMappings(steamInstallPath)
+        }
+      }
+    }
     return {
       bin: wine.bin,
       args: ['run', exe],
@@ -528,7 +591,11 @@ export function buildEpicUninstallCommand(
   game: UnifiedGame
 ): { bin: string; args: string[]; env: NodeJS.ProcessEnv } | null {
   if (!det.legendaryBin) return null
-  return { bin: det.legendaryBin, args: ['-y', 'uninstall', game.appId], env: runnerEnv(det, 'legendary') }
+  return {
+    bin: det.legendaryBin,
+    args: ['-y', 'uninstall', game.appId],
+    env: runnerEnv(det, 'legendary')
+  }
 }
 
 // ---------- Amazon ----------
@@ -540,7 +607,9 @@ export async function readAmazonLibrary(det: HeroicDetection): Promise<UnifiedGa
   )
   const list = Array.isArray(cache) ? cache : cache?.games
   if (!list) return []
-  return list.map((g) => toUnified('amazon', g, !!g.is_installed, g.install?.install_path, !!det.nileBin))
+  return list.map((g) =>
+    toUnified('amazon', g, !!g.is_installed, g.install?.install_path, !!det.nileBin)
+  )
 }
 
 export function buildAmazonInstallCommand(
@@ -565,7 +634,11 @@ export function buildAmazonLaunchCommand(
 ): { bin: string; args: string[]; env: NodeJS.ProcessEnv } | null {
   if (!det.nileBin) return null
   if (game.platform === 'linux') {
-    return { bin: det.nileBin, args: ['launch', game.appId, '--no-wine'], env: runnerEnv(det, 'nile') }
+    return {
+      bin: det.nileBin,
+      args: ['launch', game.appId, '--no-wine'],
+      env: runnerEnv(det, 'nile')
+    }
   }
   if (!wine) return null
   return {
@@ -588,7 +661,7 @@ export function buildAmazonUninstallCommand(
 interface HeroicGameConfigFile {
   [appId: string]: {
     winePrefix?: string
-    wineVersion?: { bin?: string; type?: string }
+    wineVersion?: { bin?: string; name?: string; type?: string }
   }
 }
 
@@ -650,7 +723,8 @@ export function resolveWineForGame(
   det: HeroicDetection,
   store: StoreKind,
   appId: string,
-  steamRoot: string | null
+  steamRoot: string | null,
+  title?: string
 ): { bin: string; prefix: string; type: string } | null {
   if (det.configDir) {
     const perGame = readJsonSafe<HeroicGameConfigFile>(
@@ -658,12 +732,19 @@ export function resolveWineForGame(
     )
     const entry = perGame?.[appId]
     if (entry?.wineVersion?.bin && entry?.winePrefix) {
-      return { bin: entry.wineVersion.bin, prefix: entry.winePrefix, type: entry.wineVersion.type ?? 'wine' }
+      return {
+        bin: entry.wineVersion.bin,
+        prefix: entry.winePrefix,
+        type: entry.wineVersion.type ?? 'wine'
+      }
     }
     const global = readJsonSafe<HeroicGlobalConfig>(join(det.configDir, 'config.json'))
     const bin = global?.defaultSettings?.wineVersion?.bin
-    const prefix = global?.defaultSettings?.defaultWinePrefix
-    if (bin && prefix && existsSync(bin)) {
+    const prefixRoot = global?.defaultSettings?.defaultWinePrefix
+    if (bin && prefixRoot && existsSync(bin)) {
+      // defaultWinePrefix is the folder Heroic keeps prefixes IN (Prefixes/<Game Title>),
+      // not a prefix itself - using it directly put every game into one shared prefix.
+      const prefix = join(prefixRoot, sanitizeFolderName(title ?? `${store}-${appId}`))
       return { bin, prefix, type: global?.defaultSettings?.wineVersion?.type ?? 'wine' }
     }
   }
@@ -687,9 +768,10 @@ export async function resolveOrInstallWineForGame(
   appId: string,
   steamRoot: string | null,
   gameId: string,
-  onProgress?: (evt: InstallProgressEvent) => void
+  onProgress?: (evt: InstallProgressEvent) => void,
+  title?: string
 ): Promise<{ bin: string; prefix: string; type: string } | null> {
-  const existing = resolveWineForGame(det, store, appId, steamRoot)
+  const existing = resolveWineForGame(det, store, appId, steamRoot, title)
   if (existing) return existing
   const runtime = await downloadLatestGEProton(gameId, onProgress ?? (() => {}))
   if (!runtime) return null
@@ -704,4 +786,81 @@ export async function readHeroicLibrary(det: HeroicDetection): Promise<UnifiedGa
     readAmazonLibrary(det)
   ])
   return [...gog, ...epic, ...amazon]
+}
+
+export interface ProtonBuild {
+  /** Folder name, e.g. "proton-10-codecs" or "Proton - Experimental". */
+  name: string
+  bin: string
+}
+
+/** Every Proton build available to GOG/Epic/Amazon games: user-installed
+ *  (compatibilitytools.d), Steam's own Proton versions, and anything this app downloaded. */
+export function listProtonBuilds(steamRoot: string | null): ProtonBuild[] {
+  const dirs = [
+    ...(steamRoot
+      ? [join(steamRoot, 'compatibilitytools.d'), join(steamRoot, 'steamapps', 'common')]
+      : []),
+    compatToolsDir()
+  ]
+  const builds = new Map<string, ProtonBuild>()
+  for (const dir of dirs) {
+    let names: string[] = []
+    try {
+      names = readdirSync(dir, { withFileTypes: true })
+        .filter((e) => e.isDirectory() && /proton/i.test(e.name))
+        .map((e) => e.name)
+    } catch {
+      continue
+    }
+    for (const name of names) {
+      const bin = join(dir, name, 'proton')
+      if (existsSync(bin) && !builds.has(name)) builds.set(name, { name, bin })
+    }
+  }
+  return [...builds.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function gameConfigPath(det: HeroicDetection, appId: string): string | null {
+  return det.configDir ? join(det.configDir, 'GamesConfig', `${appId}.json`) : null
+}
+
+/** The Proton build forced for this game in Heroic's per-game config, or null when it
+ *  uses Heroic's default (the same file resolveWineForGame reads first). */
+export function getGameProton(det: HeroicDetection, appId: string): string | null {
+  const file = gameConfigPath(det, appId)
+  const entry = file ? readJsonSafe<HeroicGameConfigFile>(file)?.[appId] : undefined
+  return entry?.wineVersion?.type === 'proton' ? (entry.wineVersion.name ?? null) : null
+}
+
+/**
+ * Forces a Proton build for a GOG/Epic/Amazon game, or (build null) goes back to the
+ * default. Written to Heroic's own per-game config - merged, keeping every other setting
+ * there - so Heroic and OmniLauncher agree on what the game runs with. The prefix stays the
+ * game's existing one, or Heroic's usual Prefixes/<title> for a game that had none.
+ */
+export function setGameProton(
+  det: HeroicDetection,
+  game: UnifiedGame,
+  build: ProtonBuild | null
+): void {
+  const file = gameConfigPath(det, game.appId)
+  if (!file || !det.configDir) throw new Error('Heroic config not found')
+  const data = (readJsonSafe<Record<string, unknown>>(file) ?? {}) as Record<string, unknown>
+  const entry = { ...((data[game.appId] as Record<string, unknown>) ?? {}) }
+  if (!build) {
+    delete entry.wineVersion
+  } else {
+    const global = readJsonSafe<HeroicGlobalConfig>(join(det.configDir, 'config.json'))
+    const prefixRoot = global?.defaultSettings?.defaultWinePrefix
+    entry.wineVersion = { bin: build.bin, name: build.name, type: 'proton' }
+    if (!entry.winePrefix && prefixRoot) {
+      entry.winePrefix = join(prefixRoot, sanitizeFolderName(game.title))
+    }
+  }
+  data[game.appId] = entry
+  if (!('version' in data)) data.version = 'v0'
+  if (!('explicit' in data)) data.explicit = true
+  mkdirSync(dirname(file), { recursive: true })
+  writeFileSync(file, JSON.stringify(data, null, 2))
 }

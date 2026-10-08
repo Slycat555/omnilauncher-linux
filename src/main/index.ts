@@ -130,6 +130,12 @@ export function toggleMaximizeMainWindow(): void {
   else mainWindow.maximize()
 }
 
+/** Big Picture mode (see BigPictureView.tsx) runs the window fullscreen, covering the
+ *  desktop panel the same way Steam's own Big Picture does. */
+export function setMainWindowFullscreen(on: boolean): void {
+  mainWindow?.setFullScreen(on)
+}
+
 export function isMainWindowMaximized(): boolean {
   return mainWindow?.isMaximized() ?? false
 }

@@ -1,10 +1,12 @@
 import { execSync, spawn } from 'child_process'
-import { existsSync, readdirSync, readFileSync } from 'fs'
+import { existsSync, lstatSync, readdirSync, readFileSync } from 'fs'
 import { homedir } from 'os'
 import { join } from 'path'
 import type { UnifiedGame } from '../../shared/types'
 import { isVdfObject, parseVdf, type VdfNode } from '../vdf'
 import { STEAM_FLATPAK_ID, type SteamDetection } from './detect'
+import { steamAutoInstall, steamUninstall, waitForSteamCef } from './steamCef'
+import { hostEnv } from '../hostEnv'
 
 function str(v: VdfNode | string | undefined, fallback = ''): string {
   return typeof v === 'string' ? v : fallback
@@ -34,7 +36,7 @@ export function readDefaultSteamId64(steamRoot: string): string | null {
   }
 }
 
-function readLibraryFolders(steamRoot: string): string[] {
+export function readLibraryFolders(steamRoot: string): string[] {
   const vdfPath = join(steamRoot, 'steamapps', 'libraryfolders.vdf')
   if (!existsSync(vdfPath)) return [steamRoot]
   try {
@@ -63,13 +65,7 @@ function readPlaytimes(steamRoot: string): Map<string, { minutes: number; lastPl
     if (!existsSync(localConfig)) continue
     try {
       const parsed = parseVdf(readFileSync(localConfig, 'utf-8'))
-      const apps = navigate(parsed, [
-        'UserLocalConfigStore',
-        'Software',
-        'Valve',
-        'Steam',
-        'apps'
-      ])
+      const apps = navigate(parsed, ['UserLocalConfigStore', 'Software', 'Valve', 'Steam', 'apps'])
       if (!isVdfObject(apps)) continue
       for (const appId of Object.keys(apps)) {
         const appNode = apps[appId]
@@ -317,11 +313,18 @@ export interface SteamInstallState {
   fullyInstalled: boolean
   bytesDownloaded: number
   bytesToDownload: number
+  /** Uncompressed bytes Steam writes to disk for this update (the "stage" figures). */
+  bytesStaged: number
+  bytesToStage: number
+  /** The Steam library folder holding this app - its steamapps/downloading/<id> is where
+   *  the files land while downloading. */
+  libPath: string
 }
 
-/** Reads the same appmanifest_<id>.acf Steam itself writes live during an install, so
- *  progress can be observed without any process of our own to read output from - Steam
- *  updates this file continuously (every ~1s) for the whole duration of a download. */
+/** Reads appmanifest_<id>.acf for an install's totals and state. NOTE: Steam does NOT
+ *  rewrite this file continuously - measured on a live download, BytesDownloaded stayed
+ *  frozen for over a minute while gigabytes landed on disk - so its byte counts are only
+ *  a coarse checkpoint. measureSteamDownloadBytes() below is the live signal. */
 export function readSteamInstallState(steamRoot: string, appId: string): SteamInstallState | null {
   for (const libPath of readLibraryFolders(steamRoot)) {
     const manifestPath = join(libPath, 'steamapps', `appmanifest_${appId}.acf`)
@@ -342,7 +345,10 @@ export function readSteamInstallState(steamRoot: string, appId: string): SteamIn
         stateFlags,
         fullyInstalled: (stateFlags & 4) !== 0 && !stillDownloading,
         bytesDownloaded,
-        bytesToDownload
+        bytesToDownload,
+        bytesStaged: num(state['BytesStaged']),
+        bytesToStage: num(state['BytesToStage']),
+        libPath
       }
     } catch {
       continue
@@ -528,7 +534,9 @@ export function disarmSteamWindowSuppression(): void {
 }
 
 function spawnDetached(cmd: string, args: string[]): void {
-  const child = spawn(cmd, args, { detached: true, stdio: 'ignore' })
+  // hostEnv: Steam is often started from here, and everything it launches inherits
+  // its environment - it must not carry OmniLauncher's AppImage paths.
+  const child = spawn(cmd, args, { detached: true, stdio: 'ignore', env: hostEnv() })
   child.unref()
 }
 
@@ -590,7 +598,11 @@ function steamUri(execCommand: string[], variant: SteamDetection['variant'], uri
  * closeSteamWindow() confirms (via the on-disk manifest) that the user has actually
  * clicked through it and a download has begun.
  */
-function steamUriForInstall(execCommand: string[], variant: SteamDetection['variant'], uri: string): void {
+function steamUriForInstall(
+  execCommand: string[],
+  variant: SteamDetection['variant'],
+  uri: string
+): void {
   if (!isSteamRunning(variant)) {
     const cold = steamArgv(execCommand, ['-silent'])
     spawnDetached(cold.cmd, cold.args)
@@ -604,6 +616,16 @@ function steamUriForInstall(execCommand: string[], variant: SteamDetection['vari
   spawnDetached(running.cmd, running.args)
 }
 
+/** Starts Steam with no window at all (-silent: tray only) if it isn't already running.
+ *  Called at OmniLauncher startup too, so Steam is warm - and its install API reachable -
+ *  by the time anything is installed or launched, without its library window appearing. */
+export function startSteamSilently(det: SteamDetection): boolean {
+  if (!det.execCommand || isSteamRunning(det.variant)) return false
+  const cold = steamArgv(det.execCommand, ['-silent'])
+  spawnDetached(cold.cmd, cold.args)
+  return true
+}
+
 export function launchSteamGame(det: SteamDetection, appId: string): void {
   if (!det.execCommand) return
   steamUri(det.execCommand, det.variant, `steam://rungameid/${appId}`)
@@ -611,6 +633,35 @@ export function launchSteamGame(det: SteamDetection, appId: string): void {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+/** Bytes actually written so far in steamapps/downloading/<appId>. Steam writes each
+ *  file there as it's downloaded and decompressed (it does not preallocate them - its
+ *  content log shows "preallocated 0 files"), so allocated disk blocks track real staging
+ *  progress live, unlike the manifest. Counted via st_blocks rather than st_size so a
+ *  sparse or pre-sized file can't overstate progress. */
+export function measureSteamDownloadBytes(libPath: string, appId: string): number {
+  let total = 0
+  const walk = (dir: string): void => {
+    let names: string[]
+    try {
+      names = readdirSync(dir)
+    } catch {
+      return
+    }
+    for (const name of names) {
+      const path = join(dir, name)
+      try {
+        const st = lstatSync(path)
+        if (st.isDirectory()) walk(path)
+        else if (st.isFile()) total += st.blocks * 512
+      } catch {
+        // file moved/removed mid-walk (Steam commits files out of here) - skip it
+      }
+    }
+  }
+  walk(join(libPath, 'steamapps', 'downloading', appId))
+  return total
 }
 
 export interface SteamInstallProgress {
@@ -628,39 +679,128 @@ export interface SteamInstallProgress {
  * on-disk manifest Steam itself writes to report real progress, resolving only once the
  * install has actually finished.
  */
+/** Ids of Steam's own top-level windows right now (main window, dialogs) - used to tell
+ *  when the install dialog has appeared and when it's been closed again. */
+function steamWindowIds(): Set<string> {
+  try {
+    return new Set(
+      execSync('wmctrl -l -x', { stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .split('\n')
+        .filter((line) => line.includes('steamwebhelper'))
+        .map((line) => line.trim().split(/\s+/)[0])
+        .filter(Boolean)
+    )
+  } catch {
+    return new Set()
+  }
+}
+
+export type SteamInstallOutcome = 'installed' | 'cancelled'
+
 export async function installSteamGame(
   det: SteamDetection,
   appId: string,
-  onProgress?: (p: SteamInstallProgress) => void
-): Promise<void> {
+  onProgress?: (p: SteamInstallProgress) => void,
+  /** Set once the user cancels in OmniLauncher (InstallManager.cancel has already told
+   *  Steam to stop) - ends the wait instead of polling a download that's going away. */
+  isCancelled: () => boolean = () => false
+): Promise<SteamInstallOutcome> {
   if (!det.execCommand || !det.root) throw new Error('Steam not found')
-  steamUriForInstall(det.execCommand, det.variant, `steam://install/${appId}`)
 
-  // Deliberately no fixed delay before polling starts: the dialog now stays open on its
-  // own (see steamUriForInstall) until the user actually clicks Install, however long
-  // that takes - polling just waits for the manifest to appear, which only happens once
-  // they do, and closeSteamWindow() only runs from that point on.
+  // Windows that already existed (Steam's main window) - anything new after this is the
+  // install dialog, whose disappearance without a download means the user cancelled.
+  const baselineWindows = steamWindowIds()
+
+  // Preferred path: confirm Steam's install wizard through its own API (steamCef.ts), so
+  // no dialog needs clicking. Falls back to the normal steam://install dialog when
+  // Steam's remote debugging isn't enabled, or when Steam genuinely needs the user
+  // (EULA, not enough disk space) - in that case its dialog is already open.
+  // Steam not running: start it silently and wait for its install API, rather than going
+  // through steam://install, whose dialog is exactly what this path avoids.
+  if (startSteamSilently(det)) await waitForSteamCef(120000)
+  // Steam's desktop UI still opens its own install window alongside the wizard even
+  // though every question is answered through the API - minimize it the instant it maps
+  // so Steam stays headless. Disarmed afterwards so the user can still open Steam.
+  armSteamWindowSuppression()
+  let auto: Awaited<ReturnType<typeof steamAutoInstall>>
+  try {
+    auto = await steamAutoInstall(appId)
+  } finally {
+    disarmSteamWindowSuppression()
+  }
+  if (auto.result === 'cancelled') return 'cancelled'
+  if (auto.result === 'failed') throw new Error(auto.reason)
+  if (auto.result === 'unavailable') {
+    steamUriForInstall(det.execCommand, det.variant, `steam://install/${appId}`)
+  }
+  const watchDialog = auto.result !== 'started'
+
   let windowClosed = false
-  const deadline = Date.now() + 30 * 60 * 1000 // long enough for a large game on a slow link
-  while (Date.now() < deadline) {
+  let manifestSeen = false
+  let dialogSeen = false
+  let dialogGoneAt = 0
+  // Progress never moves backwards: when the download finishes Steam moves the files out
+  // of steamapps/downloading into the game folder, so the live on-disk measure shrinks
+  // right before the manifest finally reports the install as complete.
+  let bestFraction = 0
+  // Only the wait for the install to *start* is bounded - a large game on a slow link
+  // can download for hours, and must not be reported as failed partway through.
+  const startDeadline = Date.now() + 30 * 60 * 1000
+
+  for (;;) {
+    if (isCancelled()) return 'cancelled'
     const state = readSteamInstallState(det.root, appId)
-    if (state) {
-      if (!windowClosed) {
-        closeSteamWindow()
-        windowClosed = true
+
+    if (!state) {
+      // The manifest existing and then vanishing is how Steam cancels a fresh install
+      // (removing it from the Downloads list / "Uninstall" mid-download).
+      if (manifestSeen) return 'cancelled'
+
+      if (watchDialog) {
+        const newWindows = [...steamWindowIds()].filter((id) => !baselineWindows.has(id))
+        if (newWindows.length > 0) {
+          dialogSeen = true
+          dialogGoneAt = 0
+        } else if (dialogSeen) {
+          // Closed without a manifest appearing: the user hit Cancel. A short grace
+          // period covers the gap between clicking Install and Steam writing the file.
+          if (!dialogGoneAt) dialogGoneAt = Date.now()
+          else if (Date.now() - dialogGoneAt > 4000) return 'cancelled'
+        }
       }
-      if (state.fullyInstalled) return
-      if (state.bytesToDownload > 0) {
-        onProgress?.({
-          percent: (state.bytesDownloaded / state.bytesToDownload) * 100,
-          bytesDone: state.bytesDownloaded,
-          bytesTotal: state.bytesToDownload
-        })
+      if (Date.now() > startDeadline) throw new Error('Install timed out - check the Steam client.')
+      await sleep(1500)
+      continue
+    }
+
+    manifestSeen = true
+    if (!windowClosed) {
+      closeSteamWindow()
+      windowClosed = true
+    }
+    if (state.fullyInstalled) return 'installed'
+    if (state.bytesToDownload > 0) {
+      // The manifest's own figure is a stale checkpoint; the bytes on disk relative to
+      // the uncompressed total are live. Both are fractions of the same update, so the
+      // larger one is the most recent truth. Reported in download (network) bytes, the
+      // same units Steam's own Downloads page shows, by scaling the fraction - the
+      // stage/download ratio varies slightly per file, so this is an estimate.
+      let fraction = state.bytesDownloaded / state.bytesToDownload
+      if (state.bytesToStage > 0) {
+        const staged = measureSteamDownloadBytes(state.libPath, appId)
+        fraction = Math.max(fraction, staged / state.bytesToStage)
       }
+      // Capped below 100% - only the manifest flipping to fully installed means done.
+      bestFraction = Math.max(bestFraction, Math.min(fraction, 0.999))
+      onProgress?.({
+        percent: bestFraction * 100,
+        bytesDone: bestFraction * state.bytesToDownload,
+        bytesTotal: state.bytesToDownload
+      })
     }
     await sleep(1500)
   }
-  throw new Error('Install timed out - check the Steam client.')
 }
 
 export async function uninstallSteamGame(det: SteamDetection, appId: string): Promise<void> {
@@ -678,9 +818,11 @@ export async function uninstallSteamGame(det: SteamDetection, appId: string): Pr
   // instant the confirm click actually happens, well before the files are removed or
   // the manifest disappears - that bit is the real "confirmed" signal that was missing,
   // not a guessed delay, so it's safe to close the window on exactly like install does.
-  steamUri(det.execCommand, det.variant, `steam://uninstall/${appId}`)
+  // No dialog: Steam's own "Uninstall" confirmation call via its API, when reachable.
+  const silent = isSteamRunning(det.variant) && (await steamUninstall(appId))
+  if (!silent) steamUri(det.execCommand, det.variant, `steam://uninstall/${appId}`)
 
-  let windowClosed = false
+  let windowClosed = silent
   const deadline = Date.now() + 5 * 60 * 1000
   while (Date.now() < deadline) {
     const state = readSteamInstallState(det.root, appId)

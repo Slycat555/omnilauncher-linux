@@ -19,6 +19,7 @@ export function GameCard({ game, focused, onMouseEnter }: Props): React.JSX.Elem
   const selected = useAppStore((s) => !!s.selectedForManage[game.id])
   const toggleGameSelected = useAppStore((s) => s.toggleGameSelected)
   const openDetails = useAppStore((s) => s.openDetails)
+  const queued = useAppStore((s) => s.downloads[game.id]?.status === 'queued')
 
   useEffect(() => {
     void loadCover(game.id)
@@ -62,7 +63,7 @@ export function GameCard({ game, focused, onMouseEnter }: Props): React.JSX.Elem
         ) : null}
 
         {coverUrl ? (
-          <img className="cover" src={coverUrl} alt={game.title} loading="lazy" />
+          <img className="cover" src={coverUrl} alt={game.title} decoding="sync" />
         ) : (
           <div className="cover-fallback">
             <span>{game.title}</span>
@@ -74,7 +75,7 @@ export function GameCard({ game, focused, onMouseEnter }: Props): React.JSX.Elem
         <div className="card-footer-main">
           <div className="card-title">{game.title}</div>
           {game.isInstalling ? (
-            <div className="card-subtext">Installing…</div>
+            <div className="card-subtext">{queued ? 'Queued' : 'Installing…'}</div>
           ) : (
             <div className="card-subtext">{game.isInstalled ? 'Installed' : 'Not installed'}</div>
           )}

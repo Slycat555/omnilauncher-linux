@@ -43,10 +43,12 @@ export function registerCoverProtocolHandler(): void {
 
     try {
       const res = await net.fetch(pathToFileURL(resolved).toString())
-      // The file itself never expires by content, only by URL (the ?v= query) changing -
-      // tell Chromium not to reuse a cached response across different versions.
+      // Every URL carries a ?v= version that changes whenever the file is replaced, so a
+      // given URL's bytes never change - cache it forever. 'no-cache' here made Chromium
+      // re-request every cover each time a card mounted (every tab switch, every scroll),
+      // which is what showed as covers loading/flickering in.
       const headers = new Headers(res.headers)
-      headers.set('Cache-Control', 'no-cache')
+      headers.set('Cache-Control', 'public, max-age=31536000, immutable')
       return new Response(res.body, { status: res.status, headers })
     } catch {
       return new Response('Not found', { status: 404 })

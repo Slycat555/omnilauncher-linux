@@ -144,3 +144,13 @@ export const RestoreIcon = ({ size }: IconProps): React.JSX.Element =>
     size
   )
 
+/** Big Picture mode toggle in the titlebar - a TV, same idea as Steam's own icon. */
+export const TvIcon = ({ size }: IconProps): React.JSX.Element =>
+  base(
+    <>
+      <rect x="2.5" y="5" width="19" height="13" rx="2" />
+      <path d="M8 21h8" />
+      <path d="M12 18v3" />
+    </>,
+    size
+  )

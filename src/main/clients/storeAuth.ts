@@ -5,6 +5,7 @@ import { promisify } from 'util'
 import { loginAmazonWindow, loginEpicWindow, loginGogWindow } from './authWindow'
 import { runnerEnv, type HeroicDetection } from './detect'
 import { syncGogLibraryCache } from './gogCatalog'
+import { hostEnv } from '../hostEnv'
 
 const execFileP = promisify(execFile)
 
@@ -63,7 +64,7 @@ export async function loginGog(det: HeroicDetection): Promise<void> {
   const { stdout, stderr } = await execFileP(
     det.gogdlBin,
     ['--auth-config-path', authPath, 'auth', '--code', code],
-    { env: { ...process.env, ...runnerEnv(det, 'gogdl') } }
+    { env: hostEnv(runnerEnv(det, 'gogdl')) }
   )
   const out = (stdout + stderr).trim()
   if (out.includes('"error"') || !existsSync(authPath)) {
@@ -90,7 +91,7 @@ export async function loginEpic(det: HeroicDetection): Promise<void> {
   if (!det.legendaryBin) throw new Error('legendary not found')
   const code = await loginEpicWindow(EPIC_LOGIN_URL)
   const { stdout, stderr } = await execFileP(det.legendaryBin, ['auth', '--code', code], {
-    env: { ...process.env, ...runnerEnv(det, 'legendary') }
+    env: hostEnv(runnerEnv(det, 'legendary'))
   })
   const out = (stdout + stderr).toLowerCase()
   // legendary checks for an existing valid session before even looking at --code, and
@@ -99,7 +100,10 @@ export async function loginEpic(det: HeroicDetection): Promise<void> {
   // count as success. loginEpicWindow already forced a fresh Epic login page load
   // (there's no cached-session shortcut on that side), the "already valid" case here is
   // purely legendary's own local session cache, not a failure to log in at all.
-  if (!out.includes('successfully logged in') && !out.includes('stored credentials are still valid')) {
+  if (
+    !out.includes('successfully logged in') &&
+    !out.includes('stored credentials are still valid')
+  ) {
     throw new Error('Epic rejected the login. Try again.')
   }
 }
@@ -107,7 +111,7 @@ export async function loginEpic(det: HeroicDetection): Promise<void> {
 export async function logoutEpic(det: HeroicDetection): Promise<void> {
   if (!det.legendaryBin) throw new Error('legendary not found')
   await execFileP(det.legendaryBin, ['auth', '--delete'], {
-    env: { ...process.env, ...runnerEnv(det, 'legendary') }
+    env: hostEnv(runnerEnv(det, 'legendary'))
   })
 }
 
@@ -116,7 +120,7 @@ export async function logoutEpic(det: HeroicDetection): Promise<void> {
 export async function loginAmazon(det: HeroicDetection): Promise<void> {
   if (!det.nileBin) throw new Error('nile not found')
   const { stdout } = await execFileP(det.nileBin, ['auth', '--login', '--non-interactive'], {
-    env: { ...process.env, ...runnerEnv(det, 'nile') }
+    env: hostEnv(runnerEnv(det, 'nile'))
   })
   const start = JSON.parse(stdout.trim()) as {
     url: string
@@ -138,7 +142,7 @@ export async function loginAmazon(det: HeroicDetection): Promise<void> {
       '--serial',
       start.serial
     ],
-    { env: { ...process.env, ...runnerEnv(det, 'nile') } }
+    { env: hostEnv(runnerEnv(det, 'nile')) }
   )
   if (!amazonLoggedIn(det)) {
     throw new Error('Amazon rejected the login. Try again.')
@@ -148,6 +152,6 @@ export async function loginAmazon(det: HeroicDetection): Promise<void> {
 export async function logoutAmazon(det: HeroicDetection): Promise<void> {
   if (!det.nileBin) throw new Error('nile not found')
   await execFileP(det.nileBin, ['auth', '--logout'], {
-    env: { ...process.env, ...runnerEnv(det, 'nile') }
+    env: hostEnv(runnerEnv(det, 'nile'))
   })
 }

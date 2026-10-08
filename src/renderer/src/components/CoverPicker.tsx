@@ -1,5 +1,16 @@
+import { useEffect, useRef } from 'react'
 import { useAppStore } from '../store'
+import { useModalNav } from '../useModalNav'
 import { XIcon } from './Icons'
+
+/** Counts how many options share the first row - the grid is responsive
+ *  (auto-fill), so the column count depends on the window width. */
+function gridColumns(grid: HTMLElement | null): number {
+  const items = grid ? Array.from(grid.children) : []
+  if (items.length === 0) return 1
+  const top = (items[0] as HTMLElement).offsetTop
+  return items.filter((el) => (el as HTMLElement).offsetTop === top).length
+}
 
 export function CoverPicker(): React.JSX.Element | null {
   const gameId = useAppStore((s) => s.coverPickerGameId)
@@ -8,6 +19,20 @@ export function CoverPicker(): React.JSX.Element | null {
   const games = useAppStore((s) => s.games)
   const closeCoverPicker = useAppStore((s) => s.closeCoverPicker)
   const chooseCover = useAppStore((s) => s.chooseCover)
+  const gridRef = useRef<HTMLDivElement>(null)
+
+  const focusedIndex = useModalNav({
+    enabled: !!gameId,
+    count: loading ? 0 : options.length,
+    columns: () => gridColumns(gridRef.current),
+    onSelect: (i) => gameId && options[i] && void chooseCover(gameId, options[i].url),
+    onClose: closeCoverPicker
+  })
+
+  useEffect(() => {
+    const el = gridRef.current?.children[focusedIndex] as HTMLElement | undefined
+    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+  }, [focusedIndex])
 
   if (!gameId) return null
   const game = games.find((g) => g.id === gameId)
@@ -35,11 +60,11 @@ export function CoverPicker(): React.JSX.Element | null {
             <div style={{ fontSize: 12 }}>Check your SteamGridDB API key in Settings.</div>
           </div>
         ) : (
-          <div className="cover-picker-grid">
-            {options.map((opt) => (
+          <div className="cover-picker-grid" ref={gridRef}>
+            {options.map((opt, i) => (
               <button
                 key={opt.id}
-                className="cover-picker-option"
+                className={`cover-picker-option${i === focusedIndex ? ' focused' : ''}`}
                 onClick={() => chooseCover(gameId, opt.url)}
               >
                 <img src={opt.thumb} alt="" loading="lazy" />
@@ -47,6 +72,14 @@ export function CoverPicker(): React.JSX.Element | null {
             ))}
           </div>
         )}
+        <div className="modal-hints">
+          <span>
+            <kbd>A</kbd> Choose
+          </span>
+          <span>
+            <kbd>B</kbd> Close
+          </span>
+        </div>
       </div>
     </div>
   )

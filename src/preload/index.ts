@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 import type {
   AppSettings,
+  CompatInfo,
   CoverOption,
   DetectionResult,
   InstallProgressEvent,
@@ -18,6 +19,7 @@ const api = {
   toggleMaximizeWindow: (): Promise<void> => ipcRenderer.invoke('window:toggleMaximize'),
   isWindowMaximized: (): Promise<boolean> => ipcRenderer.invoke('window:isMaximized'),
   closeWindow: (): Promise<void> => ipcRenderer.invoke('window:close'),
+  setFullscreen: (on: boolean): Promise<void> => ipcRenderer.invoke('window:setFullscreen', on),
   onWindowMaximizedChanged: (cb: (maximized: boolean) => void): (() => void) => {
     const listener = (_e: unknown, maximized: boolean): void => cb(maximized)
     ipcRenderer.on('window:maximized', listener)
@@ -38,6 +40,9 @@ const api = {
   chooseCover: (gameId: string, url: string): Promise<string> =>
     ipcRenderer.invoke('covers:choose', gameId, url),
   installGame: (gameId: string): Promise<void> => ipcRenderer.invoke('game:install', gameId),
+  getCompat: (gameId: string): Promise<CompatInfo> => ipcRenderer.invoke('compat:get', gameId),
+  setCompat: (gameId: string, toolId: string): Promise<void> =>
+    ipcRenderer.invoke('compat:set', gameId, toolId),
   cancelInstall: (gameId: string): Promise<void> =>
     ipcRenderer.invoke('game:cancelInstall', gameId),
   uninstallGame: (gameId: string): Promise<void> => ipcRenderer.invoke('game:uninstall', gameId),

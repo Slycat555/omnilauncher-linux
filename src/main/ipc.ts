@@ -1,5 +1,6 @@
 import { BrowserWindow, ipcMain, shell } from 'electron'
 import type {
+  CompatInfo,
   InstallProgressEvent,
   LaunchStateEvent,
   SettingsPatch,
@@ -24,15 +25,30 @@ import {
   closeMainWindow,
   isMainWindowMaximized,
   minimizeMainWindow,
+  setMainWindowFullscreen,
   showMainWindow,
   toggleMaximizeMainWindow
 } from './index'
 import { installManager, type RuntimeContext as InstallCtx } from './installManager'
-import { launchGame, type RuntimeContext as LaunchCtx } from './launchManager'
+import {
+  launchGame,
+  syncGamescopeLaunchOptions,
+  type RuntimeContext as LaunchCtx
+} from './launchManager'
 import { detectAll, getCachedLibrary, getRuntimeDetections, refreshLibrary } from './library'
 import { isNfcAvailable, startNfcWatcher, writeGameToTag } from './nfcManager'
 import { fixNfcPermissions } from './clients/nfcPermissionFix'
 import { chooseCover, getCoverArt, searchCoverOptions } from './steamgriddb'
+import { startSteamSilently } from './clients/steam'
+import { getGameProton, listProtonBuilds, setGameProton } from './clients/heroic'
+import {
+  enableSteamInputForGenericControllers,
+  getSteamCompatTools,
+  setSteamCompatTool,
+  ensureSteamAutoAccept,
+  waitForSteamCef
+} from './clients/steamCef'
+import { startLibraryWatcher } from './libraryWatcher'
 import { getWineActivity, startWineMonitor } from './wineMonitor'
 
 let gameIndex = new Map<string, UnifiedGame>()
@@ -54,6 +70,13 @@ function assertNoWineRunning(): void {
   if (getWineActivity().active) {
     throw new Error('A Wine/Proton game is running - close it first.')
   }
+}
+
+/** Installed Steam games - from the live index, or the on-disk cache right after startup
+ *  before the first scan has populated it. */
+async function installedSteamAppIds(): Promise<string[]> {
+  const games = gameIndex.size > 0 ? [...gameIndex.values()] : await getCachedLibrary()
+  return games.filter((g) => g.store === 'steam' && g.isInstalled).map((g) => g.appId)
 }
 
 async function doRefresh(): Promise<UnifiedGame[]> {
@@ -88,6 +111,7 @@ export function registerIpcHandlers(): void {
   // frame: false.
   safeHandle('window:minimize', async () => minimizeMainWindow())
   safeHandle('window:toggleMaximize', async () => toggleMaximizeMainWindow())
+  safeHandle('window:setFullscreen', async (_e, on: boolean) => setMainWindowFullscreen(on))
   safeHandle('window:isMaximized', async () => isMainWindowMaximized())
   safeHandle('window:close', async () => closeMainWindow())
 
@@ -99,7 +123,13 @@ export function registerIpcHandlers(): void {
 
   safeHandle('settings:get', async () => loadSettings())
 
-  safeHandle('settings:save', async (_e, patch: SettingsPatch) => saveSettings(patch))
+  safeHandle('settings:save', async (_e, patch: SettingsPatch) => {
+    const saved = saveSettings(patch)
+    // Apply a gamescope change to games' Steam launch options right away, not only on
+    // their next launch from here.
+    if ('useGamescope' in patch) void syncGamescopeLaunchOptions(await installedSteamAppIds())
+    return saved
+  })
 
   safeHandle('covers:get', async (_e, gameId: string) => {
     const settings = loadSettings()
@@ -152,7 +182,50 @@ export function registerIpcHandlers(): void {
   })
 
   safeHandle('game:cancelInstall', async (_e, gameId: string) => {
-    installManager.cancel(gameId)
+    const { steam } = await getRuntimeDetections()
+    await installManager.cancel(gameId, steam)
+  })
+
+  safeHandle('compat:get', async (_e, gameId: string): Promise<CompatInfo> => {
+    const game = gameIndex.get(gameId)
+    const none: CompatInfo = { supported: false, current: '', options: [] }
+    if (!game) return none
+    const { steam, heroic } = await getRuntimeDetections()
+    if (game.store === 'steam') {
+      const info = await getSteamCompatTools(game.appId)
+      if (!info) return none
+      return {
+        supported: true,
+        current: info.current,
+        options: [{ id: '', label: 'Default (Steam decides)' }, ...info.tools]
+      }
+    }
+    // GOG/Epic/Amazon run Windows builds through Proton; a native Linux build can't.
+    if (game.platform === 'linux') return none
+    return {
+      supported: true,
+      current: getGameProton(heroic, game.appId) ?? '',
+      options: [
+        { id: '', label: 'Default (Heroic setting)' },
+        ...listProtonBuilds(steam.root).map((b) => ({ id: b.name, label: b.name }))
+      ]
+    }
+  })
+
+  safeHandle('compat:set', async (_e, gameId: string, toolId: string) => {
+    assertNoWineRunning()
+    const game = gameIndex.get(gameId)
+    if (!game) throw new Error('Unknown game')
+    const { steam, heroic } = await getRuntimeDetections()
+    if (game.store === 'steam') {
+      if (!(await setSteamCompatTool(game.appId, toolId))) {
+        throw new Error("Couldn't reach Steam to change its compatibility setting.")
+      }
+      return
+    }
+    const build = toolId ? listProtonBuilds(steam.root).find((b) => b.name === toolId) : null
+    if (toolId && !build) throw new Error(`Proton build "${toolId}" not found`)
+    setGameProton(heroic, game, build ?? null)
   })
 
   safeHandle('game:uninstall', async (_e, gameId: string) => {
@@ -259,6 +332,36 @@ export function registerIpcHandlers(): void {
     (available) => broadcast('nfc:availabilityChanged', available),
     (message) => broadcast('app:warning', message)
   )
+
+  // Steam runs headless (tray only, no window) and is started up front, so its install
+  // API is ready before the first install - see startSteamSilently().
+  void getRuntimeDetections()
+    .then(async ({ steam }) => {
+      startSteamSilently(steam)
+      if (await waitForSteamCef(120000)) {
+        await ensureSteamAutoAccept()
+        // Steam Input for generic controllers (the 8BitDo isn't an Xbox/PlayStation pad) -
+        // re-applied every start so all Steam games, and GOG games launched through Steam,
+        // see it as a standard controller.
+        await enableSteamInputForGenericControllers()
+        await syncGamescopeLaunchOptions(await installedSteamAppIds())
+      }
+    })
+    .catch(() => {})
+
+  // Installs/uninstalls made in Steam or Heroic directly show up without a manual rescan,
+  // and Steam downloads started there appear on the Downloads page.
+  void getRuntimeDetections()
+    .then(({ steam, heroic }) =>
+      startLibraryWatcher({
+        steam,
+        heroic,
+        isTracked: (gameId) => installManager.isBusy(gameId),
+        onLibraryChanged: async () => broadcast('library:updated', await doRefresh()),
+        onProgress: (evt) => broadcast('install:progress', evt)
+      })
+    )
+    .catch(() => {})
 
   safeHandle('wine:getActivity', async () => getWineActivity())
   startWineMonitor((activity: WineActivity) => broadcast('wine:activity', activity))

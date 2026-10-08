@@ -112,8 +112,10 @@ export function GameGrid({
 
   const startIndex = firstVisibleRow * columns
   const endIndex = Math.min(games.length, (lastVisibleRow + 1) * columns)
-  const topSpacerHeight = firstVisibleRow * rowHeight
-  const bottomSpacerHeight = (totalRows - 1 - lastVisibleRow) * rowHeight
+  // Each spacer is itself a grid row, so the grid adds its own CARD_GAP after/before it -
+  // subtract that, or the spacer is one gap too tall and the rows jump while scrolling.
+  const topSpacerHeight = Math.max(0, firstVisibleRow * rowHeight - CARD_GAP)
+  const bottomSpacerHeight = Math.max(0, (totalRows - 1 - lastVisibleRow) * rowHeight - CARD_GAP)
 
   return (
     <div className="game-grid" ref={gridRef}>

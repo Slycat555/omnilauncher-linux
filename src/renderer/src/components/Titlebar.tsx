@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { MaximizeIcon, MinimizeIcon, RestoreIcon, XIcon } from './Icons'
+import { useAppStore } from '../store'
+import { MaximizeIcon, MinimizeIcon, RestoreIcon, TvIcon, XIcon } from './Icons'
 
 /** Custom window chrome, since the BrowserWindow is created with frame: false (see
  *  main/index.ts) - the OS/window manager draws no title bar or window buttons at all
@@ -8,6 +9,7 @@ import { MaximizeIcon, MinimizeIcon, RestoreIcon, XIcon } from './Icons'
  *  opt back out (no-drag) so they stay clickable. */
 export function Titlebar(): React.JSX.Element {
   const [maximized, setMaximized] = useState(false)
+  const setBigPicture = useAppStore((s) => s.setBigPicture)
 
   useEffect(() => {
     void window.api.isWindowMaximized().then(setMaximized)
@@ -21,6 +23,13 @@ export function Titlebar(): React.JSX.Element {
         onDoubleClick={() => void window.api.toggleMaximizeWindow()}
       />
       <div className="titlebar-buttons">
+        <button
+          className="titlebar-btn titlebar-btn-bigpicture"
+          title="Big Picture mode (F11 / Start)"
+          onClick={() => setBigPicture(true)}
+        >
+          <TvIcon size={13} />
+        </button>
         <button
           className="titlebar-btn"
           title="Minimize"

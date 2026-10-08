@@ -40,6 +40,35 @@ backends (`gogdl`, `legendary`, `nile`).
 - **TV-friendly UI scaling** — a display scale setting for couch/TV use, independent of your
   desktop's own scaling.
 
+- **Big Picture mode** — a fullscreen, controller-first view modelled on Steam's Big Picture:
+  library tabs on L1/R1, a capsule grid, a game page with Play/Install, and a button legend.
+  Start / F11 / the TV icon toggles it; it can also open automatically at launch.
+
+- **Steam-style Downloads page** — current download with live speed, peak, time remaining and
+  a network graph, plus a queue (one download at a time) and a completed list. Downloads
+  started in Steam directly show up here too.
+
+- **Install/uninstall detection** — games installed or removed in Steam or Heroic appear or
+  disappear automatically, no manual rescan.
+
+- **Per-game options** (right-click or Y) — install/uninstall, choose the Proton version
+  (Steam games and GOG/Epic/Amazon Windows games), cover art, NFC tag.
+
+- **Seamless Steam** — Steam runs in the background with no windows; install prompts, EULAs
+  and pre-launch dialogs are answered automatically. GOG games launch through Steam as
+  shortcuts so they get Steam Input like Steam games. This uses Steam's own client API, which
+  needs Steam's remote debugging switched on: create an empty
+  `~/.local/share/Steam/.cef-enable-remote-debugging` file and restart Steam (the same switch
+  Decky Loader uses). Note that any local program can then control Steam through
+  `localhost:8080`. Without it, Steam's normal dialogs appear instead.
+
+- **Full controller support** — Xbox/PlayStation/generic pads (including unrecognised ones
+  like the 8BitDo Ultimate 2C) and the original Steam Controller (through its Desktop Layout)
+  drive the whole UI, including cover-art picking and game options.
+
+- **Game-running lock** — while a game is running (from Steam, Heroic or OmniLauncher) the
+  launcher shows the game's title and ignores input, so controller presses never land on it.
+
 ## Installation
 
 Download the latest AppImage from the Releases page, make it executable, and run it:

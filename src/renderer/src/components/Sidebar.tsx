@@ -1,6 +1,10 @@
 import type { AppSettings, StoreKind, UnifiedGame } from '../../../shared/types'
+import { formatSpeed } from '../format'
 import type { StoreFilter } from '../store'
-import { GridIcon, SettingsIcon } from './Icons'
+import { useAppStore } from '../store'
+import { DownloadIcon, GridIcon, SettingsIcon } from './Icons'
+
+export type View = 'library' | 'settings' | 'downloads'
 
 interface Props {
   games: UnifiedGame[]
@@ -9,8 +13,8 @@ interface Props {
   onStoreFilter: (f: StoreFilter) => void
   installedOnly: boolean
   onToggleInstalledOnly: () => void
-  view: 'library' | 'settings'
-  onView: (v: 'library' | 'settings') => void
+  view: View
+  onView: (v: View) => void
 }
 
 const ALL_STORES: { key: StoreKind; label: string }[] = [
@@ -33,6 +37,14 @@ export function Sidebar({
   const countFor = (f: StoreFilter): number =>
     f === 'all' ? games.length : games.filter((g) => g.store === f).length
   const installedCount = games.filter((g) => g.isInstalled).length
+  const activeDownloads = useAppStore((s) =>
+    Object.values(s.downloads).filter((d) => d.status === 'active')
+  )
+  const totalSpeed = activeDownloads.reduce((sum, d) => sum + d.speedBps, 0)
+  const known = activeDownloads.filter((d) => d.percent !== undefined)
+  const overallPercent = known.length
+    ? known.reduce((sum, d) => sum + (d.percent ?? 0), 0) / known.length
+    : undefined
 
   const visibleStores = ALL_STORES.filter((s) => {
     if (s.key === 'epic') return settings?.enabledStores.epic ?? false
@@ -87,7 +99,37 @@ export function Sidebar({
         ))}
       </div>
 
+      <div className="nav-group">
+        <button
+          className={`nav-item${view === 'downloads' ? ' active' : ''}`}
+          onClick={() => onView('downloads')}
+        >
+          <span className="nav-item-label">
+            <DownloadIcon size={14} />
+            Downloads
+          </span>
+          {activeDownloads.length > 0 && (
+            <span className="count accent">{activeDownloads.length}</span>
+          )}
+        </button>
+      </div>
+
       <div className="sidebar-footer">
+        {activeDownloads.length > 0 && (
+          <button className="sidebar-download-status" onClick={() => onView('downloads')}>
+            <div className="sidebar-download-text">
+              <span>
+                Downloading ({activeDownloads.length})
+              </span>
+              <span>{formatSpeed(totalSpeed)}</span>
+            </div>
+            <div
+              className={`dl-progress small${overallPercent === undefined ? ' indeterminate' : ''}`}
+            >
+              <div className="dl-progress-fill" style={{ width: `${overallPercent ?? 0}%` }} />
+            </div>
+          </button>
+        )}
         <button
           className={`nav-item${view === 'settings' ? ' active' : ''}`}
           onClick={() => onView('settings')}

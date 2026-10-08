@@ -1,13 +1,18 @@
 import { useAppStore } from '../store'
 
-/** Covers the whole library while any Wine/Proton process is running, so a stray click,
+/** Covers the whole library while a game is running, so a stray click,
  *  key or controller press meant for the game can never start an install/launch in the
  *  launcher behind it. The UI underneath is also made `inert` by App.tsx - this overlay
  *  is just what the user sees. The titlebar stays outside both, so the window can still
  *  be minimized or closed to the tray. */
 export function WineLockOverlay(): React.JSX.Element | null {
-  const { active, processes } = useAppStore((s) => s.wineActivity)
+  const { active, gameIds } = useAppStore((s) => s.wineActivity)
+  const games = useAppStore((s) => s.games)
   if (!active) return null
+  // Always the game's library title - never a process or file name.
+  const titles = gameIds
+    .map((id) => games.find((g) => g.id === id)?.title)
+    .filter((t): t is string => !!t)
 
   return (
     <div className="wine-lock-overlay" role="alertdialog" aria-live="polite">
@@ -15,7 +20,7 @@ export function WineLockOverlay(): React.JSX.Element | null {
         <div className="wine-lock-pulse" />
         <div className="wine-lock-label">Game running</div>
         <div className="wine-lock-title">
-          {processes.length > 0 ? processes.join(', ') : 'Wine / Proton is running'}
+          {titles.length > 0 ? titles.join(', ') : 'A game is running'}
         </div>
         <div className="wine-lock-hint">
           OmniLauncher is paused and will unlock automatically when it closes.

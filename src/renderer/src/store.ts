@@ -4,6 +4,7 @@ import type {
   AppSettings,
   CoverOption,
   DetectionResult,
+  InstallPhase,
   InstallProgressEvent,
   StoreAuthStatus,
   StoreKind,
@@ -12,6 +13,40 @@ import type {
 } from '../../shared/types'
 
 export type StoreFilter = 'all' | StoreKind
+
+/** How many one-second speed samples the Downloads network graph keeps (2 minutes). */
+export const DOWNLOAD_SAMPLES = 120
+
+/** One install as shown on the Downloads page - created when an install starts and kept
+ *  (as completed/failed/cancelled) until the user clears it, like Steam's own list. */
+export interface DownloadEntry {
+  gameId: string
+  /** 'queued' installs wait for the active one to finish - only one runs at a time. */
+  status: 'queued' | 'active' | 'done' | 'error' | 'cancelled'
+  phase: InstallPhase
+  startedAt: number
+  finishedAt?: number
+  percent?: number
+  downloadedBytes?: number
+  totalBytes?: number
+  /** Current speed in bytes/s - 0 once the backend has gone quiet for a few seconds. */
+  speedBps: number
+  peakBps: number
+  /** Speed once per second, oldest first - drives the network graph. */
+  samples: number[]
+  /** ETA as printed by the backend CLI, when it prints one. */
+  eta?: string
+  message?: string
+  /** Last byte reading and when it was taken, for deriving speed when the backend
+   *  reports bytes but no speed (Steam, which only exposes its manifest). */
+  lastBytes?: number
+  lastBytesAt?: number
+  lastSpeedAt: number
+}
+
+/** Seconds of silence after which the current speed is shown as 0 rather than frozen at
+ *  the last value - Steam's manifest and the CLIs both stop updating while stalled. */
+const SPEED_STALE_MS = 6000
 
 interface AppState {
   games: UnifiedGame[]
@@ -37,6 +72,13 @@ interface AppState {
    *  used to disable gamepad navigation while in-game, so a controller input meant
    *  for the game itself can never accidentally launch/switch something in the UI. */
   runningGameIds: Record<string, true>
+
+  downloads: Record<string, DownloadEntry>
+  clearFinishedDownloads: () => void
+
+  /** Fullscreen, controller-first Big Picture mode (BigPictureView.tsx). */
+  bigPicture: boolean
+  setBigPicture: (on: boolean) => void
 
   /** Any Wine/Proton process running on the system, from the main process's monitor -
    *  the whole UI is locked while this is active (see WineLockOverlay). */
@@ -118,7 +160,21 @@ const store = createStore<AppState>((set, get) => ({
   bulkUninstalling: false,
 
   runningGameIds: {},
-  wineActivity: { active: false, processes: [] },
+  wineActivity: { active: false, gameIds: [] },
+  downloads: {},
+  clearFinishedDownloads: () =>
+    set((state) => ({
+      downloads: Object.fromEntries(
+        Object.entries(state.downloads).filter(
+          ([, d]) => d.status === 'active' || d.status === 'queued'
+        )
+      )
+    })),
+  bigPicture: false,
+  setBigPicture: (on) => {
+    set({ bigPicture: on })
+    void window.api.setFullscreen(on)
+  },
 
   coverPickerGameId: null,
   coverPickerOptions: [],
@@ -156,6 +212,7 @@ const store = createStore<AppState>((set, get) => ({
         window.api.getSettings()
       ])
       set({ games: cached, detection, settings })
+      if (settings.startInBigPicture) get().setBigPicture(true)
       // Wait for the first screenful's worth of covers before ever showing the grid -
       // without this, every card rendered its plain placeholder first and then popped
       // in the real art the instant its fetch resolved, all across the grid, visibly at
@@ -200,6 +257,21 @@ const store = createStore<AppState>((set, get) => ({
 
       window.api.onInstallProgress((evt) => {
         set((state) => {
+          let download = state.downloads[evt.gameId]
+          // A download started outside OmniLauncher (in Steam): its first progress event
+          // creates the entry, so it shows on the Downloads page like one of ours.
+          let games = state.games
+          if (evt.external && evt.phase === 'downloading' && download?.status !== 'active') {
+            download = newDownload(evt.gameId)
+            games = games.map((g) => (g.id === evt.gameId ? { ...g, isInstalling: true } : g))
+          }
+          if (evt.external && (evt.phase === 'done' || evt.phase === 'cancelled')) {
+            games = games.map((g) => (g.id === evt.gameId ? { ...g, isInstalling: false } : g))
+          }
+          const downloads =
+            download && download.status === 'active'
+              ? { ...state.downloads, [evt.gameId]: applyProgress(download, evt) }
+              : state.downloads
           const nextLines = [...(state.consoleLog[evt.gameId] ?? [])]
           if (evt.raw) {
             nextLines.push(evt.raw)
@@ -209,7 +281,9 @@ const store = createStore<AppState>((set, get) => ({
           }
           return {
             progress: { ...state.progress, [evt.gameId]: evt },
-            consoleLog: { ...state.consoleLog, [evt.gameId]: nextLines }
+            consoleLog: { ...state.consoleLog, [evt.gameId]: nextLines },
+            downloads,
+            games
           }
         })
       })
@@ -235,6 +309,27 @@ const store = createStore<AppState>((set, get) => ({
           }))
         }
       })
+      // One graph sample per second for every active download, independent of how often
+      // the backend happens to print - legendary prints every ~1s, Steam's manifest is
+      // polled every 1.5s, so sampling on events alone would make the graph stutter.
+      setInterval(() => {
+        const now = Date.now()
+        const active = Object.values(get().downloads).filter((d) => d.status === 'active')
+        if (active.length === 0) return
+        set((state) => {
+          const downloads = { ...state.downloads }
+          for (const d of active) {
+            const speedBps = now - d.lastSpeedAt > SPEED_STALE_MS ? 0 : d.speedBps
+            downloads[d.gameId] = {
+              ...d,
+              speedBps,
+              peakBps: Math.max(d.peakBps, speedBps),
+              samples: [...d.samples, speedBps].slice(-DOWNLOAD_SAMPLES)
+            }
+          }
+          return { downloads }
+        })
+      }, 1000)
       window.api.onLibraryUpdated((games) => set({ games }))
       window.api.onWarning((message) => set({ toast: message }))
 
@@ -271,26 +366,34 @@ const store = createStore<AppState>((set, get) => ({
   dismissToast: () => set({ toast: null }),
 
   install: async (gameId) => {
+    // One download at a time: anything started while another is running waits its turn
+    // and is picked up by startNextQueued() when the active one ends.
+    const busy = Object.values(get().downloads).some((d) => d.status === 'active')
     set((state) => ({
       games: state.games.map((g) => (g.id === gameId ? { ...g, isInstalling: true } : g)),
-      consoleLog: { ...state.consoleLog, [gameId]: [] }
+      consoleLog: { ...state.consoleLog, [gameId]: [] },
+      downloads: {
+        ...state.downloads,
+        [gameId]: busy ? { ...newDownload(gameId), status: 'queued' } : newDownload(gameId)
+      }
     }))
-    try {
-      await window.api.installGame(gameId)
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
-      set((state) => ({
-        toast: `Install failed: ${message}`,
-        consoleLog: { ...state.consoleLog, [gameId]: [...(state.consoleLog[gameId] ?? []), message] }
-      }))
-    } finally {
-      set((state) => ({
-        games: state.games.map((g) => (g.id === gameId ? { ...g, isInstalling: false } : g))
-      }))
-    }
+    if (!busy) await runInstall(gameId)
   },
 
   cancelInstall: async (gameId) => {
+    // A queued install never reached the backend - just drop it from the queue.
+    if (get().downloads[gameId]?.status === 'queued') {
+      set((state) => {
+        const downloads = { ...state.downloads }
+        delete downloads[gameId]
+        return {
+          downloads,
+          games: state.games.map((g) => (g.id === gameId ? { ...g, isInstalling: false } : g))
+        }
+      })
+      return
+    }
+    set((state) => ({ downloads: finishDownload(state.downloads, gameId, 'cancelled') }))
     try {
       await window.api.cancelInstall(gameId)
     } catch (err) {
@@ -345,6 +448,7 @@ const store = createStore<AppState>((set, get) => ({
       // of the session with no way to retry. Only a genuine result (found art, or
       // confirmed nothing to fetch) gets cached.
       if (!resolved) return
+      if (result.cover) warmImage(result.cover)
       set((state) => ({ covers: { ...state.covers, [gameId]: result } }))
     } catch (err) {
       console.error('loadCover failed for', gameId, err)
@@ -412,6 +516,131 @@ const store = createStore<AppState>((set, get) => ({
     }
   }
 }))
+
+/** Decoded cover images kept alive for the session. Fetching + decoding each cover once,
+ *  up front, means a card that mounts later (tab switch, scrolling back, Big Picture)
+ *  paints its art in the same frame from memory instead of loading/flickering in. */
+const warmImages = new Map<string, HTMLImageElement>()
+function warmImage(url: string): void {
+  if (warmImages.has(url)) return
+  const img = new Image()
+  img.decoding = 'async'
+  img.src = url
+  warmImages.set(url, img)
+  img.decode().catch(() => {})
+}
+
+/** Runs one install through the backend, then hands over to the next queued one. */
+async function runInstall(gameId: string): Promise<void> {
+  const set = store.setState
+  try {
+    await window.api.installGame(gameId)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    set((state) => ({
+      toast: `Install failed: ${message}`,
+      consoleLog: { ...state.consoleLog, [gameId]: [...(state.consoleLog[gameId] ?? []), message] },
+      downloads: finishDownload(state.downloads, gameId, 'error', message)
+    }))
+  } finally {
+    set((state) => ({
+      games: state.games.map((g) => (g.id === gameId ? { ...g, isInstalling: false } : g)),
+      // The backend can return without a final event (e.g. cancelled before starting) -
+      // make sure the entry isn't left "active", or the queue would never move on.
+      downloads: finishDownload(state.downloads, gameId, 'cancelled')
+    }))
+    void startNextQueued()
+  }
+}
+
+/** Starts the oldest queued install, if nothing else is downloading. */
+async function startNextQueued(): Promise<void> {
+  const { downloads } = store.getState()
+  if (Object.values(downloads).some((d) => d.status === 'active')) return
+  const next = Object.values(downloads)
+    .filter((d) => d.status === 'queued')
+    .sort((a, b) => a.startedAt - b.startedAt)[0]
+  if (!next) return
+  store.setState((state) => ({
+    downloads: { ...state.downloads, [next.gameId]: newDownload(next.gameId) }
+  }))
+  await runInstall(next.gameId)
+}
+
+function newDownload(gameId: string): DownloadEntry {
+  const now = Date.now()
+  return {
+    gameId,
+    status: 'active',
+    phase: 'starting',
+    startedAt: now,
+    speedBps: 0,
+    peakBps: 0,
+    samples: [],
+    lastSpeedAt: now
+  }
+}
+
+/** Marks a still-active download as finished; already-finished ones are left alone so a
+ *  late error/cancel can't overwrite a real "done". */
+function finishDownload(
+  downloads: Record<string, DownloadEntry>,
+  gameId: string,
+  status: 'done' | 'error' | 'cancelled',
+  message?: string
+): Record<string, DownloadEntry> {
+  const d = downloads[gameId]
+  if (!d || d.status !== 'active') return downloads
+  return {
+    ...downloads,
+    [gameId]: {
+      ...d,
+      status,
+      message: message ?? d.message,
+      finishedAt: Date.now(),
+      speedBps: 0,
+      percent: status === 'done' ? 100 : d.percent
+    }
+  }
+}
+
+function applyProgress(d: DownloadEntry, evt: InstallProgressEvent): DownloadEntry {
+  if (evt.phase === 'done' || evt.phase === 'error' || evt.phase === 'cancelled') {
+    const status = evt.phase === 'done' ? 'done' : evt.phase
+    return finishDownload({ [d.gameId]: d }, d.gameId, status, evt.message)[d.gameId]
+  }
+
+  const now = Date.now()
+  const next: DownloadEntry = {
+    ...d,
+    phase: evt.phase,
+    percent: evt.percent ?? d.percent,
+    downloadedBytes: evt.downloadedBytes ?? d.downloadedBytes,
+    totalBytes: evt.totalBytes ?? d.totalBytes,
+    eta: evt.eta ?? d.eta,
+    message: evt.phase === 'starting' ? (evt.message ?? d.message) : d.message
+  }
+
+  if (evt.speedBps !== undefined) {
+    next.speedBps = evt.speedBps
+    next.lastSpeedAt = now
+  } else if (evt.downloadedBytes !== undefined) {
+    // Derive speed from the byte delta; ignore readings too close together to be
+    // meaningful (the same manifest state can be reported twice in quick succession).
+    if (d.lastBytes !== undefined && d.lastBytesAt !== undefined) {
+      const seconds = (now - d.lastBytesAt) / 1000
+      if (seconds >= 0.5 && evt.downloadedBytes >= d.lastBytes) {
+        next.speedBps = (evt.downloadedBytes - d.lastBytes) / seconds
+        next.lastSpeedAt = now
+      }
+    }
+    if (d.lastBytesAt === undefined || (now - d.lastBytesAt) / 1000 >= 0.5) {
+      next.lastBytes = evt.downloadedBytes
+      next.lastBytesAt = now
+    }
+  }
+  return next
+}
 
 // How many covers init() waits for before showing the grid at all - generous for any
 // realistic first screenful so nothing visible pops in, without turning a large

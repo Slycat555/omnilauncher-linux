@@ -1,17 +1,20 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { BigPictureView } from './components/BigPictureView'
 import { CoverPicker } from './components/CoverPicker'
+import { DownloadsView } from './components/DownloadsView'
 import { GameDetailsPanel } from './components/GameDetailsPanel'
 import { GameGrid } from './components/GameGrid'
 import { NfcLaunchOverlay } from './components/NfcLaunchOverlay'
 import { SettingsView } from './components/SettingsView'
-import { Sidebar } from './components/Sidebar'
+import { Sidebar, type View } from './components/Sidebar'
 import { Titlebar } from './components/Titlebar'
 import { Toast } from './components/Toast'
 import { TopBar } from './components/TopBar'
 import { WineLockOverlay } from './components/WineLockOverlay'
 import type { StoreFilter } from './store'
 import { useAppStore } from './store'
-import { useGamepadNav } from './useGamepadNav'
+import { keyNavAction, typingInField } from './keyNav'
+import { installDesktopLayoutGuard, useGamepadNav } from './useGamepadNav'
 
 function App(): React.JSX.Element {
   const {
@@ -32,13 +35,22 @@ function App(): React.JSX.Element {
     setStoreFilter,
     toggleInstalledOnly,
     primaryAction,
-    toggleManageMode
+    toggleManageMode,
+    detailsGameId,
+    coverPickerGameId,
+    openDetails,
+    bigPicture,
+    setBigPicture
   } = useAppStore()
 
   const anyGameRunning = Object.keys(runningGameIds).length > 0
   const uiLocked = wineActivity.active
+  // The details panel and cover picker drive themselves with the controller while open
+  // (useModalNav) - the library/Big Picture behind them must not react to the same
+  // presses at the same time.
+  const modalOpen = !!detailsGameId || !!coverPickerGameId
 
-  const [view, setView] = useState<'library' | 'settings'>('library')
+  const [view, setView] = useState<View>('library')
   const [focusedIndex, setFocusedIndex] = useState(0)
   // Mouse hover moves the same focus keyboard/gamepad nav uses (so the outline follows
   // whichever input moved most recently - see GameGrid's onMouseEnter), but unlike
@@ -58,6 +70,8 @@ function App(): React.JSX.Element {
   useEffect(() => {
     void init()
   }, [init])
+
+  useEffect(() => installDesktopLayoutGuard(), [])
 
   // `inert` stops new focus, but whatever already had it (the search box, a button)
   // could otherwise keep receiving keystrokes meant for the game.
@@ -119,7 +133,11 @@ function App(): React.JSX.Element {
     if (!container) return
     const recompute = (): void => {
       const card = container.querySelector<HTMLElement>('.game-card')
-      if (card) setRowHeight(card.getBoundingClientRect().height + 16)
+      // offsetHeight, not getBoundingClientRect(): the UI-scale setting is a CSS zoom, and
+      // getBoundingClientRect() returns zoomed pixels while the grid's spacer heights and
+      // scrollTop are in unzoomed CSS pixels - the mismatch made rows jump while
+      // scrolling, so scrolling up could never reach the top.
+      if (card) setRowHeight(card.offsetHeight + 16)
     }
     recompute()
     const ro = new ResizeObserver(recompute)
@@ -149,6 +167,9 @@ function App(): React.JSX.Element {
     const game = filteredGames[focusedIndex]
     if (!container || !game || rowHeight === 0) return
     if (focusSourceRef.current === 'mouse') return
+    // .main also hosts the Downloads and Settings pages - never scroll those to follow a
+    // library card that isn't even on screen.
+    if (view !== 'library') return
     const cols = columns()
     // `scrollIntoView({ block: 'nearest' })` only scrolls the minimum distance needed to
     // clear the viewport edge, so the top/bottom row never actually reaches the true edge
@@ -202,15 +223,18 @@ function App(): React.JSX.Element {
   // Mirrors the sidebar's own nav order (Sidebar.tsx) so LB/RB cycles through exactly
   // what's visible there - 'installed' is a distinct stop, not a toggle-in-place, since
   // a bumper press has no notion of "toggle off" the way clicking the button again does.
-  type Tab = 'all' | 'installed' | StoreFilter
+  // Downloads is the last stop, matching the sidebar, so the bumpers reach it from the
+  // library and back without touching the mouse.
+  type Tab = 'all' | 'installed' | StoreFilter | 'downloads'
   const tabs: Tab[] = useMemo(() => {
     const stores: StoreFilter[] = ['steam', 'gog']
     if (settings?.enabledStores.epic) stores.push('epic')
     if (settings?.enabledStores.amazon) stores.push('amazon')
-    return ['all', 'installed', ...stores]
+    return ['all', 'installed', ...stores, 'downloads']
   }, [settings])
 
   function currentTab(): Tab {
+    if (view === 'downloads') return 'downloads'
     if (installedOnly) return 'installed'
     return storeFilter
   }
@@ -218,6 +242,11 @@ function App(): React.JSX.Element {
   function cycleTab(delta: 1 | -1): void {
     const idx = tabs.indexOf(currentTab())
     const next = tabs[(idx + delta + tabs.length) % tabs.length]
+    if (next === 'downloads') {
+      setView('downloads')
+      return
+    }
+    setView('library')
     if (next === 'installed') {
       if (!installedOnly) toggleInstalledOnly()
     } else {
@@ -231,37 +260,82 @@ function App(): React.JSX.Element {
     // face-button press meant for the game (which has no window focus tug-of-war to
     // rely on, since both read raw gamepad state independently) could just as easily
     // land on the launcher and fire another install/launch/tab switch mid-session.
-    enabled: view === 'library' && !anyGameRunning && !uiLocked,
+    enabled:
+      (view === 'library' || view === 'downloads') &&
+      !anyGameRunning &&
+      !uiLocked &&
+      !modalOpen &&
+      !bigPicture,
     onDirection: move,
     onConfirm: () => {
+      if (view !== 'library') return
       const g = filteredGames[focusedIndex]
       if (g && !manageMode) primaryAction(g.id)
     },
     onBack: () => {},
     onTabLeft: () => cycleTab(-1),
-    onTabRight: () => cycleTab(1)
+    onTabRight: () => cycleTab(1),
+    // Y opens the focused game's options - previously only reachable by right-clicking
+    // the card, which left controller users no way to change cover art at all.
+    onOptions: () => {
+      if (view !== 'library') return
+      const g = filteredGames[focusedIndex]
+      if (g && !manageMode) openDetails(g.id)
+    },
+    onStart: () => setBigPicture(true)
   })
 
   useEffect(() => {
     function onKey(e: KeyboardEvent): void {
-      if (uiLocked) return
-      if (document.activeElement?.tagName === 'INPUT') return
-      if (e.key === 'Escape' && manageMode) toggleManageMode()
-      else if (e.key === 'ArrowRight') move('right')
-      else if (e.key === 'ArrowLeft') move('left')
-      else if (e.key === 'ArrowDown') move('down')
-      else if (e.key === 'ArrowUp') move('up')
-      else if (e.key === 'Enter' && !manageMode) {
+      if (uiLocked || bigPicture || modalOpen) return
+      if (typingInField() && e.key !== 'F11') return
+      const action = keyNavAction(e)
+      if (!action) return
+      // Tab toggles Big Picture (the Steam Controller's Menu button) only when nothing is
+      // focused, so ordinary Tab focus movement through buttons keeps working.
+      if (action === 'start' && e.key === 'Tab' && document.activeElement !== document.body) return
+      e.preventDefault()
+      if (action === 'start') setBigPicture(true)
+      else if (action === 'back') {
+        if (manageMode) toggleManageMode()
+      } else if (action === 'tabLeft') cycleTab(-1)
+      else if (action === 'tabRight') cycleTab(1)
+      else if (view !== 'library') return
+      else if (action === 'confirm') {
         const g = filteredGames[focusedIndex]
-        if (g) primaryAction(g.id)
-      }
+        if (g && !manageMode) primaryAction(g.id)
+      } else if (action === 'options') {
+        const g = filteredGames[focusedIndex]
+        if (g && !manageMode) openDetails(g.id)
+      } else move(action)
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filteredGames, focusedIndex, manageMode, uiLocked])
+  }, [filteredGames, focusedIndex, manageMode, uiLocked, bigPicture, modalOpen, view, tabs])
 
   const focusedGame = filteredGames[focusedIndex]
+
+  if (bigPicture) {
+    return (
+      <div className="app-root big-picture">
+        <div className="bp-shell" inert={uiLocked}>
+          <BigPictureView
+            games={[...visibleGames]
+              .filter((g) => typeof g.title === 'string' && g.title.length > 0)
+              .sort((a, b) => a.title.localeCompare(b.title))}
+            settings={settings}
+            inputEnabled={!uiLocked && !modalOpen && !anyGameRunning}
+          />
+          <Toast />
+          <CoverPicker />
+          <GameDetailsPanel />
+          <NfcLaunchOverlay />
+        </div>
+        <WineLockOverlay />
+      </div>
+    )
+  }
 
   return (
     <div className="app-root">
@@ -281,6 +355,8 @@ function App(): React.JSX.Element {
         <div className="main" ref={gridRef}>
           {view === 'settings' ? (
             <SettingsView detection={detection} />
+          ) : view === 'downloads' ? (
+            <DownloadsView />
           ) : loading ? (
             <div className="empty-state">Scanning Steam &amp; Heroic…</div>
           ) : (

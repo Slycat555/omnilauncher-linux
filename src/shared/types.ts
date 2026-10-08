@@ -47,6 +47,16 @@ export interface InstallProgressEvent {
   eta?: string
   message?: string
   raw?: string
+  /** Real bytes downloaded / to download, when the backend reports them (Steam's
+   *  manifest, or the "Downloaded: X MiB" line legendary/gogdl/nile print). Unlike
+   *  bytesDone/bytesTotal, never a chunk count. */
+  downloadedBytes?: number
+  totalBytes?: number
+  /** Current network download speed in bytes/second, as reported by the backend. */
+  speedBps?: number
+  /** A download OmniLauncher didn't start (begun in Steam directly) - the Downloads page
+   *  creates an entry for it on its first progress event. */
+  external?: boolean
 }
 
 export interface LaunchStateEvent {
@@ -55,12 +65,21 @@ export interface LaunchStateEvent {
   error?: string
 }
 
-/** Whether any Wine/Proton process is running anywhere on the system (not only games
- *  launched from this app) - the UI is locked for as long as this is active. */
+/** Whether a game is running anywhere on the system (launched from here, Steam or Heroic;
+ *  native or under Wine/Proton) - the UI is locked for as long as this is active. */
 export interface WineActivity {
   active: boolean
-  /** Windows executables seen, minus Wine's own helpers - for display only. */
-  processes: string[]
+  /** Library ids of the running games ("steam:123", "gog:456"), or "unknown" for a game
+   *  that can't be matched to the library - shown by title, never by process name. */
+  gameIds: string[]
+}
+
+/** A game's Proton choice and the builds that can be picked (game options panel). The
+ *  option with id "" is "Default" - no forced tool. */
+export interface CompatInfo {
+  supported: boolean
+  current: string
+  options: { id: string; label: string }[]
 }
 
 export type ClientVariant = 'native' | 'flatpak' | null
@@ -93,6 +112,13 @@ export interface AppSettings {
   /** CSS zoom factor applied to the whole app shell - 1 is normal size, larger values
    *  make everything (text, cards, buttons) bigger for use on a TV from a distance. */
   uiScale: number
+  /** Open straight into fullscreen Big Picture mode on launch (couch/TV setups). */
+  startInBigPicture: boolean
+  /** Desktop mode only: run every game inside a nested gamescope, fullscreen at the
+   *  monitor's native resolution and maximum refresh rate. Off by default, like the Steam
+   *  Deck's desktop mode - Steam Input can't route a controller into a nested gamescope.
+   *  Inside a gamescope session (Game Mode) games are in gamescope already. */
+  useGamescope: boolean
 }
 
 export interface SettingsPatch extends Partial<AppSettings> {}

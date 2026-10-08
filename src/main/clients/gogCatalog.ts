@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
 import { promisify } from 'util'
 import { runnerEnv, type HeroicDetection } from './detect'
+import { hostEnv } from '../hostEnv'
 
 const execFileP = promisify(execFile)
 
@@ -80,11 +81,14 @@ function formatImage(urlFormat: string | undefined, ext: string): string | undef
  * GOGUser.getCredentials() shells out to gogdl for, instead of reading/refreshing
  * auth.json by hand.
  */
-async function getGogCredentials(det: HeroicDetection, authPath: string): Promise<GogCredentials | null> {
+async function getGogCredentials(
+  det: HeroicDetection,
+  authPath: string
+): Promise<GogCredentials | null> {
   if (!det.gogdlBin) return null
   try {
     const { stdout } = await execFileP(det.gogdlBin, ['--auth-config-path', authPath, 'auth'], {
-      env: { ...process.env, ...runnerEnv(det, 'gogdl') }
+      env: hostEnv(runnerEnv(det, 'gogdl'))
     })
     const data = JSON.parse(stdout.trim()) as Partial<GogCredentials>
     return data.access_token && data.user_id ? (data as GogCredentials) : null
@@ -115,7 +119,10 @@ async function fetchOwnedGogReleases(
   return items
 }
 
-async function fetchGogGameInfo(entry: GalaxyLibraryEntry, accessToken: string): Promise<GamesDbData | null> {
+async function fetchGogGameInfo(
+  entry: GalaxyLibraryEntry,
+  accessToken: string
+): Promise<GamesDbData | null> {
   const url = `https://gamesdb.gog.com/platforms/gog/external_releases/${entry.external_id}`
   try {
     const res = await fetch(url, {
@@ -152,7 +159,11 @@ function toCachedGame(entry: GalaxyLibraryEntry, info: GamesDbData): CachedGogGa
 
 /** Bounded concurrency so a large library does not fire off hundreds of simultaneous
  *  requests, while still being far faster than the sequential fetch real Heroic does. */
-async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
   const results: R[] = new Array(items.length)
   let next = 0
   async function worker(): Promise<void> {
@@ -174,7 +185,9 @@ export async function syncGogLibraryCache(det: HeroicDetection, authPath: string
   const releases = await fetchOwnedGogReleases(creds.user_id, creds.access_token)
   if (releases.length === 0) return
   const infos = await mapWithConcurrency(releases, 5, (entry) =>
-    fetchGogGameInfo(entry, creds.access_token).then((info) => (info ? toCachedGame(entry, info) : null))
+    fetchGogGameInfo(entry, creds.access_token).then((info) =>
+      info ? toCachedGame(entry, info) : null
+    )
   )
   const games = infos.filter((g): g is CachedGogGame => g !== null)
   const cacheFile = join(det.configDir, 'store_cache', 'gog_library.json')
