@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react'
+import { typingInField } from './keyNav'
 
 type Direction = 'up' | 'down' | 'left' | 'right'
 
@@ -18,7 +19,48 @@ interface Handlers {
 }
 
 const DEADZONE = 0.5
-const REPEAT_MS = 220
+
+/**
+ * Hold-to-scroll timing, shared by the D-pad, the stick and the arrow keys: one move the
+ * instant a direction is pressed, a short pause (so a tap moves exactly once), then
+ * repeats that come quicker the longer it's held - 140 ms, 115, 94... down to 40 ms after
+ * about a second - instead of a fixed rate, or the OS key repeat's long stall followed by
+ * a flat-out race. `repeats` is how many repeats have fired since the press.
+ */
+export function navRepeatDelay(repeats: number): number {
+  if (repeats === 0) return 250
+  return Math.max(40, 140 * Math.pow(0.82, repeats - 1))
+}
+
+const ARROW_KEYS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'])
+/** Arrow keydowns the hold-to-scroll timer below sends itself. */
+const syntheticKeys = new WeakSet<Event>()
+let heldKey: { key: string; code: string; timer: number } | null = null
+
+function stopKeyRepeat(): void {
+  if (heldKey) clearTimeout(heldKey.timer)
+  heldKey = null
+}
+
+function startKeyRepeat(e: KeyboardEvent): void {
+  stopKeyRepeat()
+  const held = { key: e.key, code: e.code, timer: 0 }
+  heldKey = held
+  let repeats = 0
+  const fire = (): void => {
+    if (heldKey !== held) return
+    const ev = new KeyboardEvent('keydown', {
+      key: held.key,
+      code: held.code,
+      bubbles: true,
+      cancelable: true
+    })
+    syntheticKeys.add(ev)
+    window.dispatchEvent(ev)
+    held.timer = window.setTimeout(fire, navRepeatDelay(++repeats))
+  }
+  held.timer = window.setTimeout(fire, navRepeatDelay(0))
+}
 
 /** When the controller was last actually used (a button held, a stick or D-pad pushed). */
 let lastGamepadActivity = -Infinity
@@ -43,6 +85,28 @@ const POLL_INTERVAL_MS = 16
  * real keyboard/mouse use is unaffected once the controller has been idle a moment.
  */
 export function installDesktopLayoutGuard(): () => void {
+  // Arrow keys (a keyboard, or the D-pad/stick through Steam's Desktop Layout) get the
+  // same accelerating hold-to-scroll as the gamepad: the OS's own repeats are dropped and
+  // replaced by navRepeatDelay()'s. Text fields keep the normal key repeat.
+  const keyRepeat = (e: Event): void => {
+    const k = e as KeyboardEvent
+    if (e.type === 'keyup') {
+      if (heldKey?.key === k.key) stopKeyRepeat()
+      return
+    }
+    if (!ARROW_KEYS.has(k.key) || syntheticKeys.has(e) || typingInField()) return
+    if (k.repeat) {
+      e.stopImmediatePropagation()
+      e.preventDefault()
+      return
+    }
+    // A press the gamepad guard below drops (the pad already moved) mustn't start one.
+    if (performance.now() - lastGamepadActivity > 300) startKeyRepeat(k)
+  }
+  window.addEventListener('keydown', keyRepeat, { capture: true })
+  window.addEventListener('keyup', keyRepeat, { capture: true })
+  window.addEventListener('blur', stopKeyRepeat)
+
   const types = [
     'keydown',
     'keyup',
@@ -61,6 +125,10 @@ export function installDesktopLayoutGuard(): () => void {
   for (const t of types) window.addEventListener(t, guard, { capture: true, passive: false })
   return () => {
     for (const t of types) window.removeEventListener(t, guard, { capture: true })
+    window.removeEventListener('keydown', keyRepeat, { capture: true })
+    window.removeEventListener('keyup', keyRepeat, { capture: true })
+    window.removeEventListener('blur', stopKeyRepeat)
+    stopKeyRepeat()
   }
 }
 
@@ -74,7 +142,10 @@ export function useGamepadNav(handlers: Handlers): void {
 
   useEffect(() => {
     let raf = 0
-    let lastMove = 0
+    // Hold-to-scroll state for the D-pad/stick (see navRepeatDelay).
+    let heldDir: Direction | null = null
+    let nextMoveAt = 0
+    let repeats = 0
     const prevButtons: boolean[] = []
 
     let lastPoll = 0
@@ -120,16 +191,21 @@ export function useGamepadNav(handlers: Handlers): void {
         const dpadLeft = (standard && pad.buttons[14]?.pressed) || hatX < -DEADZONE
         const dpadRight = (standard && pad.buttons[15]?.pressed) || hatX > DEADZONE
 
-        if (enabled && now - lastMove > REPEAT_MS) {
-          let dir: Direction | null = null
-          if (dpadUp || axisY < -DEADZONE) dir = 'up'
-          else if (dpadDown || axisY > DEADZONE) dir = 'down'
-          else if (dpadLeft || axisX < -DEADZONE) dir = 'left'
-          else if (dpadRight || axisX > DEADZONE) dir = 'right'
-          if (dir) {
-            handlersRef.current.onDirection(dir)
-            lastMove = now
-          }
+        let dir: Direction | null = null
+        if (dpadUp || axisY < -DEADZONE) dir = 'up'
+        else if (dpadDown || axisY > DEADZONE) dir = 'down'
+        else if (dpadLeft || axisX < -DEADZONE) dir = 'left'
+        else if (dpadRight || axisX > DEADZONE) dir = 'right'
+        if (!dir || !enabled) {
+          heldDir = null
+        } else if (dir !== heldDir) {
+          heldDir = dir
+          repeats = 0
+          handlersRef.current.onDirection(dir)
+          nextMoveAt = now + navRepeatDelay(0)
+        } else if (now >= nextMoveAt) {
+          handlersRef.current.onDirection(dir)
+          nextMoveAt = now + navRepeatDelay(++repeats)
         }
 
         const aPressed = !!pad.buttons[0]?.pressed
