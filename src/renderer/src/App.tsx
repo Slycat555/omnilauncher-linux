@@ -15,7 +15,6 @@ import type { StoreFilter } from './store'
 import { useAppStore } from './store'
 import { keyNavAction, typingInField } from './keyNav'
 import { installDesktopLayoutGuard, setGamepadPollingPaused, useGamepadNav } from './useGamepadNav'
-import { followScrollBehavior } from './scrollFollow'
 
 function App(): React.JSX.Element {
   const {
@@ -181,7 +180,7 @@ function App(): React.JSX.Element {
     // clear the viewport edge, so the top/bottom row never actually reaches the true edge
     // of the container (a sliver of the next row stays visible, or padding is left
     // uncovered) - snap all the way when focus is on the first or last row instead.
-    const behavior = followScrollBehavior()
+    const behavior = 'instant'
     if (focusedIndex < cols) {
       container.scrollTo({ top: 0, behavior })
       return

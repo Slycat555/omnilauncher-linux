@@ -6,7 +6,6 @@ import { keyNavAction, typingInField } from '../keyNav'
 import { useGamepadNav } from '../useGamepadNav'
 import { DownloadsView } from './DownloadsView'
 import { DownloadIcon, PlayIcon, SettingsIcon, StopIcon } from './Icons'
-import { followScrollBehavior } from '../scrollFollow'
 
 interface Tab {
   key: string
@@ -87,7 +86,7 @@ function Capsule({
   }, [game.id, loadCover])
 
   useEffect(() => {
-    if (focused) ref.current?.scrollIntoView({ behavior: followScrollBehavior(), block: 'nearest' })
+    if (focused) ref.current?.scrollIntoView({ behavior: 'instant', block: 'nearest' })
   }, [focused])
 
   return (
@@ -284,7 +283,7 @@ export function BigPictureView({ games, settings, inputEnabled }: Props): React.
   // capsule's edge, leaving the tab header and the focus ring cut off above it.
   useEffect(() => {
     if (pageGameId || !tab.filter) return
-    if (index < gridColumns()) contentRef.current?.scrollTo({ top: 0, behavior: 'smooth' })
+    if (index < gridColumns()) contentRef.current?.scrollTo({ top: 0, behavior: 'instant' })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [index, tab.key, pageGameId])
 

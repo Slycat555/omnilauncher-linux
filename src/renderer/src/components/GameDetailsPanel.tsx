@@ -12,7 +12,6 @@ import {
   TrashIcon,
   XIcon
 } from './Icons'
-import { followScrollBehavior } from '../scrollFollow'
 
 interface Item {
   key: string
@@ -165,7 +164,7 @@ export function GameDetailsPanel(): React.JSX.Element | null {
   useEffect(() => {
     bodyRef.current
       ?.querySelector('.focused')
-      ?.scrollIntoView({ block: 'nearest', behavior: followScrollBehavior() })
+      ?.scrollIntoView({ block: 'nearest', behavior: 'instant' })
   }, [focusedKey])
 
   if (!gameId) return null
