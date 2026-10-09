@@ -12,6 +12,7 @@ import {
   TrashIcon,
   XIcon
 } from './Icons'
+import { followScrollBehavior } from '../scrollFollow'
 
 interface Item {
   key: string
@@ -164,7 +165,7 @@ export function GameDetailsPanel(): React.JSX.Element | null {
   useEffect(() => {
     bodyRef.current
       ?.querySelector('.focused')
-      ?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+      ?.scrollIntoView({ block: 'nearest', behavior: followScrollBehavior() })
   }, [focusedKey])
 
   if (!gameId) return null
@@ -284,8 +285,8 @@ export function GameDetailsPanel(): React.JSX.Element | null {
                 <p className="details-section-hint">
                   {(inputMode.setting === 'auto' ? inputMode.detected : inputMode.setting) ===
                   'gamepad'
-                    ? 'Steam Input\'s Gamepad layout - the game sees an Xbox controller.'
-                    : 'Steam Input\'s Keyboard (WASD) and Mouse layout - for games without controller support.'}
+                    ? "Steam Input's Gamepad layout - the game sees an Xbox controller."
+                    : "Steam Input's Keyboard (WASD) and Mouse layout - for games without controller support."}
                 </p>
                 <button
                   className={`proton-select${isFocused('input')}`}

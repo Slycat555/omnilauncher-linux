@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useAppStore } from '../store'
 import { useModalNav } from '../useModalNav'
 import { XIcon } from './Icons'
+import { followScrollBehavior } from '../scrollFollow'
 
 /** Counts how many options share the first row - the grid is responsive
  *  (auto-fill), so the column count depends on the window width. */
@@ -31,7 +32,7 @@ export function CoverPicker(): React.JSX.Element | null {
 
   useEffect(() => {
     const el = gridRef.current?.children[focusedIndex] as HTMLElement | undefined
-    el?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
+    el?.scrollIntoView({ block: 'nearest', behavior: followScrollBehavior() })
   }, [focusedIndex])
 
   if (!gameId) return null

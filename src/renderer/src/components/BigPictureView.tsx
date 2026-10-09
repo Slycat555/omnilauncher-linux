@@ -6,6 +6,7 @@ import { keyNavAction, typingInField } from '../keyNav'
 import { useGamepadNav } from '../useGamepadNav'
 import { DownloadsView } from './DownloadsView'
 import { DownloadIcon, PlayIcon, SettingsIcon, StopIcon } from './Icons'
+import { followScrollBehavior } from '../scrollFollow'
 
 interface Tab {
   key: string
@@ -86,7 +87,7 @@ function Capsule({
   }, [game.id, loadCover])
 
   useEffect(() => {
-    if (focused) ref.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+    if (focused) ref.current?.scrollIntoView({ behavior: followScrollBehavior(), block: 'nearest' })
   }, [focused])
 
   return (

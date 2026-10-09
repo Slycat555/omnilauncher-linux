@@ -15,6 +15,7 @@ import type { StoreFilter } from './store'
 import { useAppStore } from './store'
 import { keyNavAction, typingInField } from './keyNav'
 import { installDesktopLayoutGuard, setGamepadPollingPaused, useGamepadNav } from './useGamepadNav'
+import { followScrollBehavior } from './scrollFollow'
 
 function App(): React.JSX.Element {
   const {
@@ -180,12 +181,13 @@ function App(): React.JSX.Element {
     // clear the viewport edge, so the top/bottom row never actually reaches the true edge
     // of the container (a sliver of the next row stays visible, or padding is left
     // uncovered) - snap all the way when focus is on the first or last row instead.
+    const behavior = followScrollBehavior()
     if (focusedIndex < cols) {
-      container.scrollTo({ top: 0, behavior: 'smooth' })
+      container.scrollTo({ top: 0, behavior })
       return
     }
     if (focusedIndex >= filteredGames.length - cols) {
-      container.scrollTo({ top: container.scrollHeight, behavior: 'smooth' })
+      container.scrollTo({ top: container.scrollHeight, behavior })
       return
     }
     const row = Math.floor(focusedIndex / cols)
@@ -198,9 +200,9 @@ function App(): React.JSX.Element {
     // matches scrollIntoView({block: 'nearest'})'s behavior without needing the actual
     // element.
     if (rowTop < viewTop) {
-      container.scrollTo({ top: rowTop, behavior: 'smooth' })
+      container.scrollTo({ top: rowTop, behavior })
     } else if (rowBottom > viewBottom) {
-      container.scrollTo({ top: rowBottom - container.clientHeight, behavior: 'smooth' })
+      container.scrollTo({ top: rowBottom - container.clientHeight, behavior })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusedIndex, filteredGames, rowHeight])
